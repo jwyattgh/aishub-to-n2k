@@ -14,17 +14,24 @@ Every poll (61 seconds or slower, AISHub's rule):
 1. Asks AISHub for every vessel in a box around the boat. The box size is
    yours to set.
 2. Reads the JSON reply.
-3. Drops your own vessel, and every vessel your own AIS receiver has heard
-   in the last few minutes. The receiver's messages are read straight off
-   the NMEA 2000 bus, so this works whatever else is on the boat.
+3. Drops your own vessel, and every vessel your own AIS receiver already
+   has. AISHub puts the time of the vessel's own transmission on each
+   record, and the plugin compares it with the time of your receiver's
+   last message from that vessel, read straight off the NMEA 2000 bus.
+   If your receiver's message is as new as AISHub's, or newer, the vessel
+   is left to your receiver. If AISHub's is newer (a vessel that has
+   sailed out of your receiver's range, or one it has never heard), it is
+   sent.
+   A record the plugin has already sent is not sent again. When a vessel
+   goes quiet, AISHub keeps returning its last record, but the plotters
+   get nothing more, so they drop the target on their own lost-target
+   timer, exactly as they do for a vessel your receiver loses.
 4. Turns the rest into the same NMEA 2000 AIS messages a transponder
    would send: class A position (PGN 129038) and static data (129794), or
-   class B position (129039) and static data (129809, 129810).
+   class B position (129039) and static data (129809, 129810). Position,
+   name and details go every poll.
 5. Hands them to the NMEA 2000 connection you chose, which sends them to
    the bus. The plotters show the targets like any other AIS target.
-
-Every vessel in the reply (except your own) also goes into Signal K's
-vessel list, so Freeboard, KIP and the rest see them too.
 
 The plugin never sends anything to AISHub except the request itself.
 AISHub's terms forbid feeding its data, or anything made from it, back
@@ -38,15 +45,21 @@ does exactly that.
 - An AISHub account with an API key (they email it when your station
   is accepted; it looks like `AH_1234_ABCDEF12`).
 - An NMEA 2000 connection in Signal K **that can send**. See below.
-- Your boat's position in Signal K (the box is drawn around it).
+- Your boat's position in Signal K (the box is drawn around it). Until
+  there is one, the plugin does not poll.
+- Your own MMSI, so AISHub's copy of your own boat is never sent. It is
+  filled in from Signal K's vessel settings (Server → Settings → Vessel
+  base data) and can be typed in if that is empty.
 - An AIS receiver on the NMEA 2000 bus, if you want the duplicates
   filtered. Without one, everything from AISHub is sent.
 
 ### The connection must be able to send
 
 Signal K's NMEA 2000 connections receive by default. To send, the
-connection needs to claim an address on the bus, and the plugin shows
-"NMEA 2000 output NOT available" in its status until it does.
+connection needs to claim an address on the bus, which happens when
+Signal K starts. If the plugin is switched on after that, its status
+reads "NMEA 2000 output not available on <connection>: restart Signal
+K to enable it", and nothing is sent until you do.
 
 For a Yacht Devices YDWG-02 gateway (UDP or TCP):
 
@@ -75,47 +88,49 @@ CAN hat) or an Actisense NGT-1 can send as delivered.
    restart.
 2. Server → Plugin Config → AISHub to N2K:
    - **AISHub API key**.
-   - **How far from the boat to ask for, in km**: 100 is plenty
+   - **Your own MMSI**: filled in from Signal K's vessel settings; type
+     it in if it is empty.
+   - **How far from the boat to ask AISHub for**, and its **unit**
+     (kilometres, nautical miles or statute miles). 100 km is plenty
      coastal; go large offshore if you want to know who is out there.
    - **Seconds between requests**: 61 or more.
    - **Connection**: the NMEA 2000 connection to send on.
    - **Your own AIS receivers**: tick them. Vessels they hear are not
      sent to the plotters.
-   - **Minutes to trust your own receiver**: a vessel it heard this
-     recently is left to it (default 10).
-   - **Only send vessels within N nautical miles**: keeps the plotter
-     from filling with targets 100 km away (default 50, 0 = everything
-     in the box).
-   - **Ignore reports older than N minutes**: a position AISHub last
-     updated hours ago is not a live target (default 60).
-   - **Also put vessels your own receiver hears into Signal K**: on by
-     default. Turn it off if you would rather Signal K held only your
-     receiver's version of those vessels.
-3. Leave **Dry run** on and enable the plugin. Open
-   `http://<server>/plugins/aishub-to-n2k/log` to see the messages it
-   would send, and `http://<server>/plugins/aishub-to-n2k/status` for
-   the counters.
-4. Turn **Dry run** off. Targets appear on the plotters.
+3. To see what it would do first, tick **Dry run** and enable the
+   plugin. Nothing is sent; instead every poll writes one line per
+   vessel to the server log (Server → Server Log), like:
+
+   ```
+   aishub-to-n2k poll 12: 368341220 NAUTI DREAM | AISHub 16:54:05 | own receiver 16:54:05 | last sent never | skip: own receiver has it
+   aishub-to-n2k poll 12: 227011340 ESPIGUETTE_RD | AISHub 16:40:23 | own receiver never | last sent 16:40:23 | skip: already sent this report
+   aishub-to-n2k poll 12: 636024775 ISTANBUL EXPRESS | AISHub 16:55:50 | own receiver never | last sent 16:50:48 | send: own receiver has never heard it (PGNs 129038, 129794)
+   ```
+
+   The times are UTC. "AISHub" is the time on AISHub's record, "own
+   receiver" the time of your receiver's last message from that vessel,
+   "last sent" the AISHub time of the record the plugin last sent.
+4. Untick **Dry run**. Targets appear on the plotters.
 
 ## Status
 
-The plugin's status line reads like:
+The plugin's status line, on the Plugin Config page and the dashboard,
+reads like:
 
 ```
-12 polls. own receiver c078c37ae76baa6d@1 has heard 11 vessels; last poll: 13 in box,
-10 heard by own receiver, 2 sent to plotters (6 messages), 12 into Signal K, 1 beyond 50 nm
+12 polls. own receiver c078c37ae76baa6d@1 has reported 11 vessels since start;
+last poll: 42 from AISHub, 10 own receiver has, 3 already sent, 28 sent to plotters (70 messages)
 ```
 
-The `/status` endpoint gives the same as JSON, plus running totals and
-the last error.
+Errors from AISHub (a bad key, "Too frequent requests", a timeout) go
+to the server log and to the end of the status line, and the next poll
+tries again.
 
 ## How the sent data looks on the bus
 
 The messages carry the plugin's connection address as their source, so
 on the bus they come from the gateway (or CAN interface), not from your
-AIS receiver. Static data (name, callsign, size, type) is sent when a
-vessel is first seen and every 6 minutes after, like a real transponder;
-positions go every poll while AISHub still lists the vessel.
+AIS receiver.
 
 Values AISHub does not have (heading 511, course 360, speed 102.4) are
 sent as "not available", exactly as a transponder would.

@@ -4,18 +4,22 @@
  * Every poll:
  *   1. Ask AISHub for the vessels in a box around the boat.
  *   2. Read the JSON reply.
- *   3. Drop the vessels our own AIS receiver has heard recently (their
- *      MMSIs are read straight off the NMEA 2000 bus, from the devices
- *      chosen in the settings), and our own vessel.
- *   4. Turn the rest into NMEA 2000 AIS messages.
+ *   3. Drop our own vessel, and every vessel our own AIS receiver has a
+ *      message from that is as new as AISHub's. AISHub puts the time of
+ *      the vessel's own transmission on each record, and the receiver's
+ *      last message time for each MMSI is read straight off the NMEA 2000
+ *      bus (from the devices chosen in the settings) and from what Signal
+ *      K already holds for that vessel from those devices.
+ *      Also drop a vessel whose AISHub record is the same one we already
+ *      sent, so a vessel that has gone quiet is not repeated: the plotter
+ *      then drops it the way it drops any lost target.
+ *   4. Turn the rest into NMEA 2000 AIS messages: position, name and
+ *      details, every poll.
  *   5. Hand those to the chosen NMEA 2000 connection, which sends them to
- *      the bus, so the plotters show the targets. Every vessel AISHub sent
- *      also goes into Signal K's vessel list.
+ *      the bus, so the plotters show the targets.
  *
  * Nothing here ever sends anything to AISHub except the request.
  */
-const fs = require('fs')
-const path = require('path')
 const aishub = require('./lib/aishub')
 const geo = require('./lib/geo')
 const n2k = require('./lib/n2k')
@@ -24,10 +28,13 @@ const { HeardList, parseLine, mmsiFromFrame } = require('./lib/heard')
 const ADDRESS_CLAIM = 60928
 const MIN_POLL_SECONDS = 61 // AISHub's rule: one request per minute
 const LOOKUP_REFRESH_MS = 5000
-const STATIC_DATA_INTERVAL_MS = 6 * 60 * 1000 // like a real transponder
 const HEARD_KEEP_MS = 24 * 60 * 60 * 1000
-const DRY_RUN_LOG_MAX_BYTES = 5 * 1024 * 1024
-const SOURCE_LABEL = 'aishub-to-n2k'
+// AISHub's times are whole seconds and the receiver's carry fractions, so
+// the same message can differ by a second either way. Ten seconds covers it.
+const CLOCK_TOLERANCE_MS = 10 * 1000
+const KM_PER_UNIT = { km: 1, nm: 1.852, mi: 1.609344 }
+const UNIT_NAMES = { km: 'kilometres', nm: 'nautical miles', mi: 'statute miles' }
+const LOG_PREFIX = 'aishub-to-n2k'
 
 module.exports = function (app) {
   const plugin = {
@@ -43,45 +50,6 @@ module.exports = function (app) {
   let onOutAvailable
   let pollTimer
   let statusTimer
-  let lastStatus = ''
-
-  // Web endpoints under /plugins/aishub-to-n2k/:
-  //   GET status   the status line plus counters and the last poll's result
-  //   GET log      the tail of the dry-run log (?lines=N, default 50, max 1000)
-  plugin.registerWithRouter = router => {
-    router.get('/status', (req, res) => {
-      if (!state) return res.json({ status: lastStatus, running: false })
-      res.json({
-        status: lastStatus,
-        running: true,
-        dryRun: !!state.logPath,
-        logPath: state.logPath,
-        nmea2000OutAvailable: state.outAvailable,
-        box: state.lastBox,
-        addresses: Object.fromEntries(state.addresses),
-        waitingFor: missingDevices(),
-        heardVessels: state.heard.size,
-        polls: state.polls,
-        lastPollAt: state.lastPollAt ? new Date(state.lastPollAt).toISOString() : undefined,
-        lastPoll: state.lastPoll,
-        totals: state.totals,
-        errors: state.errors,
-        lastError: state.lastError
-      })
-    })
-    router.get('/log', (req, res) => {
-      if (!state || !state.logPath) return res.status(404).json({ error: 'plugin is not in dry-run mode' })
-      const lines = Math.min(1000, Math.max(1, parseInt(req.query.lines, 10) || 50))
-      let text = ''
-      try {
-        text = fs.readFileSync(state.logPath, 'utf8')
-      } catch (err) {
-        if (err.code !== 'ENOENT') return res.status(500).json({ error: err.message })
-      }
-      const all = text.split('\n').filter(Boolean)
-      res.type('text/plain').send(all.slice(-lines).join('\n') + (all.length ? '\n' : ''))
-    })
-  }
 
   plugin.schema = () => {
     const devices = knownDevices()
@@ -101,17 +69,29 @@ module.exports = function (app) {
     }
     return {
       type: 'object',
-      required: ['apiKey', 'connection'],
+      required: ['apiKey', 'mmsi', 'connection'],
       properties: {
         apiKey: {
           type: 'string',
           title: 'AISHub API key (the "username" AISHub emailed you)'
         },
-        boxKm: {
+        mmsi: {
+          type: 'string',
+          title: "Your own MMSI (filled in from Signal K's vessel settings; AISHub's copy of you is never sent)",
+          default: String(app.getSelfPath('mmsi') || '')
+        },
+        boxDistance: {
           type: 'number',
-          title: 'How far from the boat to ask AISHub for, in km (each way; 100 km = a 200 km box)',
+          title: 'How far from the boat to ask AISHub for, each way (100 = a box 200 across)',
           default: 100,
           minimum: 1
+        },
+        boxUnit: {
+          type: 'string',
+          title: 'Unit of that distance',
+          enum: Object.keys(KM_PER_UNIT),
+          enumNames: Object.values(UNIT_NAMES),
+          default: 'km'
         },
         pollSeconds: {
           type: 'number',
@@ -126,78 +106,50 @@ module.exports = function (app) {
           items: deviceItems,
           uniqueItems: true
         },
-        trustMinutes: {
-          type: 'number',
-          title: 'Minutes to trust your own receiver: a vessel it heard this recently is not sent',
-          default: 10,
-          minimum: 1
-        },
-        plotterRangeNm: {
-          type: 'number',
-          title: 'Only send vessels within this many nautical miles of the boat (0 = send everything in the box)',
-          default: 50,
-          minimum: 0
-        },
-        maxAgeMinutes: {
-          type: 'number',
-          title: 'Ignore AISHub reports older than this many minutes',
-          default: 60,
-          minimum: 1
-        },
-        heardIntoSignalK: {
-          type: 'boolean',
-          title: 'Also put vessels your own receiver hears into Signal K (off = only the extra ones)',
-          default: true
-        },
         dryRun: {
           type: 'boolean',
-          title: 'Dry run: write the NMEA 2000 messages to a log file instead of sending them',
-          default: true
+          title: "Dry run: send nothing, write each poll's decisions to the Signal K server log instead",
+          default: false
         }
       }
     }
   }
 
   plugin.uiSchema = () => ({
-    'ui:order': ['apiKey', 'boxKm', 'pollSeconds', 'connection', 'devices', 'trustMinutes', 'plotterRangeNm', 'maxAgeMinutes', 'heardIntoSignalK', 'dryRun'],
+    'ui:order': ['apiKey', 'mmsi', 'boxDistance', 'boxUnit', 'pollSeconds', 'connection', 'devices', 'dryRun'],
     apiKey: { 'ui:widget': 'password' },
     devices: { 'ui:widget': 'checkboxes' }
   })
 
   plugin.start = options => {
+    const unit = KM_PER_UNIT[options.boxUnit] ? options.boxUnit : 'km'
+    // boxKm is the name the setting had in 0.1.0.
+    const distance = Number(options.boxDistance) || Number(options.boxKm) || 100
     config = {
       apiKey: String(options.apiKey || '').trim(),
-      boxKm: Math.max(1, Number(options.boxKm) || 100),
+      mmsi: parseMmsi(options.mmsi) || parseMmsi(app.getSelfPath('mmsi')),
+      boxKm: Math.max(1, distance) * KM_PER_UNIT[unit],
+      boxText: `${Math.max(1, distance)} ${UNIT_NAMES[unit]}`,
       pollSeconds: Math.max(MIN_POLL_SECONDS, Number(options.pollSeconds) || MIN_POLL_SECONDS),
       connection: options.connection,
       devices: options.devices || [],
-      trustMinutes: Math.max(1, Number(options.trustMinutes) || 10),
-      plotterRangeNm: Math.max(0, Number(options.plotterRangeNm) || 0),
-      maxAgeMinutes: Math.max(1, Number(options.maxAgeMinutes) || 60),
-      heardIntoSignalK: options.heardIntoSignalK !== false,
-      dryRun: options.dryRun !== false
+      dryRun: options.dryRun === true
     }
     state = {
       addresses: new Map(),
       checkedAt: 0,
       heard: new HeardList(),
-      staticSentAt: new Map(),
+      sentAt: new Map(), // mmsi -> AISHub time of the record we last sent
       // The plugin sees a copy of the server object taken when it was
       // loaded, so the flag is a starting point and the event keeps it current.
       outAvailable: !!app.isNmea2000OutAvailable,
       polls: 0,
-      lastPollAt: undefined,
       lastPoll: undefined,
-      lastBox: undefined,
-      totals: emptyCounters(),
       errors: 0,
       lastError: undefined
     }
-    if (config.dryRun) {
-      state.logPath = path.join(app.getDataDirPath(), 'aishub-to-n2k-dryrun.log')
-    }
 
-    // Step 3 needs to know what our own receiver hears: read the MMSIs
+    // Step 3 needs the receiver's last message time per MMSI: read them
     // straight off the bus from the chosen devices.
     onRawLine = line => {
       if (typeof line !== 'string') return
@@ -218,10 +170,7 @@ module.exports = function (app) {
 
     statusTimer = setInterval(reportStatus, 10000)
     reportStatus()
-    if (!config.apiKey) {
-      setStatus('No AISHub API key set')
-      return
-    }
+    if (!config.apiKey || !config.mmsi) return
     schedulePoll(1000)
   }
 
@@ -253,91 +202,101 @@ module.exports = function (app) {
       return
     }
     const box = geo.boxAround(own.latitude, own.longitude, config.boxKm)
-    state.lastBox = box
     state.polls++
-    state.lastPollAt = Date.now()
     const reply = await aishub.fetchVessels(config.apiKey, box)
     if (!state) return // stopped while waiting
     state.heard.prune(HEARD_KEEP_MS, Date.now())
-    state.lastPoll = process(reply.vessels, own, Date.now())
+    state.lastPoll = process(reply.vessels, Date.now())
   }
 
   // Steps 3, 4 and 5 for one reply.
-  function process (vessels, own, now) {
+  function process (vessels, now) {
     const counts = emptyCounters()
-    counts.inBox = vessels.length
-    const ownMmsi = Number(app.getSelfPath('mmsi')) || undefined
-    const trustMs = config.trustMinutes * 60 * 1000
-    const maxAgeMs = config.maxAgeMinutes * 60 * 1000
-    const noDevices = config.devices.length === 0
-    const sent = []
+    counts.fromAishub = vessels.length
+    const sentNow = new Map()
     for (const v of vessels) {
-      if (ownMmsi && v.mmsi === ownMmsi) {
+      if (v.mmsi === config.mmsi) {
         counts.ownVessel++
+        decision(v, 'skip: own vessel')
         continue
       }
-      const heard = state.heard.heardWithin(v.mmsi, trustMs, now)
-      if (config.heardIntoSignalK || !heard) {
-        app.handleMessage(plugin.id, n2k.delta(v, SOURCE_LABEL, now))
-        counts.intoSignalK++
-      }
-      if (heard) {
-        counts.heardByOwnReceiver++
+      const ownAt = ownReceiverLastMessage(v.mmsi)
+      if (ownAt !== undefined && (v.time === undefined || v.time <= ownAt + CLOCK_TOLERANCE_MS)) {
+        counts.ownReceiverHasIt++
+        decision(v, 'skip: own receiver has it', ownAt)
         continue
       }
-      if (v.time !== undefined && now - v.time > maxAgeMs) {
-        counts.tooOld++
+      const lastSent = state.sentAt.get(v.mmsi)
+      if (lastSent !== undefined && v.time !== undefined && v.time <= lastSent) {
+        sentNow.set(v.mmsi, lastSent)
+        counts.alreadySent++
+        decision(v, 'skip: already sent this report', ownAt, lastSent)
         continue
       }
-      if (config.plotterRangeNm > 0 &&
-          geo.distanceNm(own.latitude, own.longitude, v.latitude, v.longitude) > config.plotterRangeNm) {
-        counts.outOfRange++
-        continue
-      }
-      const messages = [n2k.positionReport(v)]
-      const lastStatic = state.staticSentAt.get(v.mmsi)
-      if (lastStatic === undefined || now - lastStatic > STATIC_DATA_INTERVAL_MS) {
-        messages.push(...n2k.staticData(v))
-        state.staticSentAt.set(v.mmsi, now)
-      }
-      messages.forEach(msg => send(msg, counts))
+      const messages = [n2k.positionReport(v), ...n2k.staticData(v)]
+      const delivered = messages.map(msg => send(msg, counts)).every(Boolean)
+      if (delivered) sentNow.set(v.mmsi, v.time)
       counts.sentToPlotters++
-      sent.push(v.mmsi)
+      decision(v, ownAt === undefined ? 'send: own receiver has never heard it' : 'send: newer than own receiver\'s last message',
+        ownAt, lastSent, messages.map(m => m.pgn))
     }
-    for (const mmsi of state.staticSentAt.keys()) {
-      if (now - state.staticSentAt.get(mmsi) > HEARD_KEEP_MS) state.staticSentAt.delete(mmsi)
-    }
-    if (noDevices) counts.warning = 'no AIS device chosen, so nothing is filtered out'
-    Object.keys(counts).forEach(k => {
-      if (typeof counts[k] === 'number') state.totals[k] += counts[k]
-    })
-    counts.sentMmsis = sent
+    state.sentAt = sentNow // vessels AISHub no longer lists are forgotten
+    if (config.devices.length === 0) counts.warning = 'no AIS device chosen, so nothing is filtered out'
     return counts
   }
 
-  // Step 5: one NMEA 2000 message to the connection (or the dry-run log).
+  // Step 5: one NMEA 2000 message to the connection. Returns whether it went.
   function send (msg, counts) {
-    if (state.logPath) {
-      appendDryRun(JSON.stringify(msg))
+    if (config.dryRun) {
       counts.messages++
-      return
+      return true
     }
     if (!state.outAvailable) {
       counts.notSentNoOutput++
-      return
+      return false
     }
     app.emit('nmea2000JsonOut', msg)
     counts.messages++
+    return true
   }
 
-  function appendDryRun (line) {
+  // In a dry run, one line per vessel per poll in the server log.
+  function decision (v, action, ownAt, lastSent, pgns) {
+    if (!config.dryRun) return
+    const when = t => t === undefined ? 'never' : new Date(t).toISOString().slice(11, 19)
+    console.log(`${LOG_PREFIX} poll ${state.polls}: ${v.mmsi} ${v.name || '?'} | AISHub ${when(v.time)} | own receiver ${when(ownAt)}` +
+      ` | last sent ${when(lastSent)} | ${action}${pgns ? ` (PGNs ${pgns.join(', ')})` : ''}`)
+  }
+
+  // When did our own receiver last have a message from this vessel? The
+  // later of what we heard on the bus since the plugin started and what
+  // Signal K holds for the vessel from the chosen devices (which covers
+  // the minutes after a restart, before we have heard much ourselves).
+  function ownReceiverLastMessage (mmsi) {
+    let at = state.heard.lastHeard(mmsi)
+    let pos
     try {
-      const size = fs.existsSync(state.logPath) ? fs.statSync(state.logPath).size : 0
-      if (size > DRY_RUN_LOG_MAX_BYTES) fs.renameSync(state.logPath, state.logPath + '.1')
-      fs.appendFileSync(state.logPath, `${new Date().toISOString()} ${line}\n`)
+      pos = app.getPath(`vessels.urn:mrn:imo:mmsi:${mmsi}.navigation.position`)
     } catch (err) {
-      recordError(err)
+      pos = undefined
     }
+    if (pos && typeof pos === 'object') {
+      const entries = pos.values ? Object.entries(pos.values) : (pos.$source ? [[pos.$source, pos]] : [])
+      for (const [label, entry] of entries) {
+        if (!isOwnReceiverLabel(label)) continue
+        const t = Date.parse(entry && entry.timestamp)
+        if (!Number.isNaN(t) && (at === undefined || t > at)) at = t
+      }
+    }
+    return at
+  }
+
+  // Signal K labels a source "<connection>.<bus address>".
+  function isOwnReceiverLabel (label) {
+    const dot = String(label).lastIndexOf('.')
+    if (dot < 0) return false
+    refreshFromSignalK()
+    return label.slice(0, dot) === config.connection && state.addresses.has(label.slice(dot + 1))
   }
 
   function ownPosition () {
@@ -347,14 +306,17 @@ module.exports = function (app) {
     return value
   }
 
+  function parseMmsi (s) {
+    const n = Number(String(s === undefined || s === null ? '' : s).trim())
+    return Number.isInteger(n) && n > 0 ? n : undefined
+  }
+
   function emptyCounters () {
     return {
-      inBox: 0,
+      fromAishub: 0,
       ownVessel: 0,
-      intoSignalK: 0,
-      heardByOwnReceiver: 0,
-      tooOld: 0,
-      outOfRange: 0,
+      ownReceiverHasIt: 0,
+      alreadySent: 0,
       sentToPlotters: 0,
       messages: 0,
       notSentNoOutput: 0
@@ -449,7 +411,8 @@ module.exports = function (app) {
     return devices
   }
 
-  // ---- Status
+  // ---- Errors and status. Errors go to the server log and the status
+  // ---- line; the next poll simply tries again.
 
   function recordError (err) {
     if (!state) return
@@ -458,33 +421,27 @@ module.exports = function (app) {
     app.error(err.message)
   }
 
-  function setStatus (text) {
-    lastStatus = text
-    app.setPluginStatus(text)
-  }
-
   function reportStatus () {
     if (!state) return
-    if (!config.apiKey) return setStatus('No AISHub API key set')
+    if (!config.apiKey) return app.setPluginStatus('No AISHub API key set')
+    if (!config.mmsi) return app.setPluginStatus("No MMSI set: fill in your own MMSI so AISHub's copy of you is not sent")
     refreshFromSignalK()
     const parts = []
     const missing = missingDevices()
     if (config.devices.length === 0) parts.push('no AIS device chosen: nothing is filtered')
     else if (missing.length > 0) parts.push(`waiting to identify ${missing.join(', ')}`)
-    else parts.push(`own receiver ${[...state.addresses].map(([a, n]) => `${n}@${a}`).join(', ')} has heard ${state.heard.size} vessels`)
+    else parts.push(`own receiver ${[...state.addresses].map(([a, n]) => `${n}@${a}`).join(', ')} has reported ${state.heard.size} vessels since start`)
     const last = state.lastPoll
-    if (!last) parts.push('no poll yet')
+    if (!last) parts.push(`no poll yet (box ${config.boxText})`)
     else if (last.skipped) parts.push(`not polling: ${last.skipped}`)
     else {
-      parts.push(`last poll: ${last.inBox} in box, ${last.heardByOwnReceiver} heard by own receiver, ` +
-        `${last.sentToPlotters} sent to plotters (${last.messages} messages), ${last.intoSignalK} into Signal K` +
-        (last.tooOld ? `, ${last.tooOld} too old` : '') +
-        (last.outOfRange ? `, ${last.outOfRange} beyond ${config.plotterRangeNm} nm` : ''))
+      parts.push(`last poll: ${last.fromAishub} from AISHub, ${last.ownReceiverHasIt} own receiver has, ` +
+        `${last.alreadySent} already sent, ${last.sentToPlotters} sent to plotters (${last.messages} messages)`)
     }
-    if (state.logPath) parts.push('dry run')
-    else if (!state.outAvailable) parts.push('NMEA 2000 output NOT available on this connection (see README), nothing reaches the bus')
+    if (config.dryRun) parts.push('dry run: decisions are in the server log')
+    else if (!state.outAvailable) parts.push(`NMEA 2000 output not available on ${config.connection}: restart Signal K to enable it (see README)`)
     if (state.errors) parts.push(`${state.errors} errors (last: ${state.lastError})`)
-    setStatus(`${state.polls} polls. ${parts.join('; ')}`)
+    app.setPluginStatus(`${state.polls} polls. ${parts.join('; ')}`)
   }
 
   return plugin

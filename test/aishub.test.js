@@ -61,7 +61,7 @@ test('fetchVessels uses the injected fetcher', async () => {
   assert.strictEqual(vessels.length, 2)
 })
 
-test('box and distance', () => {
+test('box', () => {
   const box = geo.boxAround(18.07, -67.19, 100)
   assert.ok(box.latmin < 18.07 && box.latmax > 18.07)
   assert.ok(box.lonmin < -67.19 && box.lonmax > -67.19)
@@ -72,6 +72,4 @@ test('box and distance', () => {
   assert.strictEqual(polar.lonmax, 180)
   const dateline = geo.boxAround(0, 179.9, 100)
   assert.strictEqual(dateline.lonmax, 180)
-  // One degree of latitude is 60 nautical miles.
-  assert.ok(Math.abs(geo.distanceNm(18, -67, 19, -67) - 60) < 0.2)
 })
