@@ -91,8 +91,18 @@ const FAR_SHIP = { ...BASE, MMSI: 311000123, NAME: 'BIG SHIP', IMO: 9123456, TYP
 // Let the poll's promise chain settle.
 const settle = () => new Promise(r => setImmediate(r))
 
+// Fake setTimeout so polls can be triggered without waiting 61 seconds.
+// Node 18 takes a list of timer names, Node 20+ an options object.
+function fakeTimers (t) {
+  try {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+  } catch (err) {
+    t.mock.timers.enable(['setTimeout'])
+  }
+}
+
 test('sends only the vessels the own receiver does not have as new a message from', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+  fakeTimers(t)
   const app = fakeApp()
   app.isNmea2000OutAvailable = true
   // Signal K already holds NAUTI DREAM from the AIS700 (source label <connection>.<address>),
@@ -121,7 +131,7 @@ test('sends only the vessels the own receiver does not have as new a message fro
 })
 
 test('a report already sent is not sent again until AISHub has a newer one', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+  fakeTimers(t)
   const app = fakeApp()
   app.isNmea2000OutAvailable = true
   const newer = { ...NEVER_HEARD, TIME: timeAgo(-70) }
@@ -145,7 +155,7 @@ test('a report already sent is not sent again until AISHub has a newer one', asy
 })
 
 test('with output unavailable nothing is emitted, the status says to restart, and the reports go once output is there', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+  fakeTimers(t)
   const app = fakeApp()
   app.isNmea2000OutAvailable = false
   const { plugin, restore } = startWith(app, {}, [[NEVER_HEARD]])
@@ -165,7 +175,7 @@ test('with output unavailable nothing is emitted, the status says to restart, an
 })
 
 test('dry run sends nothing and writes each decision to the server log', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+  fakeTimers(t)
   const app = fakeApp()
   app.isNmea2000OutAvailable = true
   const lines = []
@@ -190,7 +200,7 @@ test('dry run sends nothing and writes each decision to the server log', async t
 })
 
 test('box distance is converted from the chosen unit, and the old boxKm setting still works', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+  fakeTimers(t)
   const app = fakeApp()
   const width = box => box.latmax - box.latmin
   const a = startWith(app, { boxDistance: 100, boxUnit: 'nm' }, [[]])
@@ -222,7 +232,7 @@ test('settings form: connections, AIS devices, own MMSI from Signal K, units, dr
 })
 
 test('no API key, or no MMSI anywhere: says so and does not poll', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+  fakeTimers(t)
   const app = fakeApp()
   const a = startWith(app, { apiKey: '' }, [[NEVER_HEARD]])
   t.mock.timers.tick(1000); await settle()
@@ -238,7 +248,7 @@ test('no API key, or no MMSI anywhere: says so and does not poll', async t => {
 })
 
 test('no own position: the poll is skipped until there is one', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+  fakeTimers(t)
   const app = fakeApp()
   app.self.position = undefined
   const { plugin, boxes, restore } = startWith(app, {}, [[NEVER_HEARD]])
@@ -256,7 +266,7 @@ test('no own position: the poll is skipped until there is one', async t => {
 })
 
 test('an AISHub error goes to the server log and the status, and the next poll tries again', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+  fakeTimers(t)
   const app = fakeApp()
   app.isNmea2000OutAvailable = true
   const aishub = require('../lib/aishub')
