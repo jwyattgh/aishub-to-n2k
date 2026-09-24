@@ -1,6 +1,6 @@
 {
   "name": "@sv-orion/aishub-to-n2k",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Signal K plugin: fetch vessels from AISHub, drop the ones your own AIS receiver hears, and send the rest to the NMEA 2000 bus for your plotters",
   "main": "index.js",
   "files": [

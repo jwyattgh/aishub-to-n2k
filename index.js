@@ -52,9 +52,17 @@ module.exports = function (app) {
   let config
   let state
   let onRawLine
-  let onOutAvailable
   let pollTimer
   let statusTimer
+  // Signal K hands a plugin a copy of the server object, taken when the
+  // plugin is loaded, so app.isNmea2000OutAvailable on it keeps its
+  // loading-time value. Keep the flag here, outside start and stop, so it
+  // also survives the restart Signal K gives the plugin on a settings change.
+  let outAvailable = !!app.isNmea2000OutAvailable
+  app.on('nmea2000OutAvailable', () => { outAvailable = true })
+  // When we last asked AISHub, so that a restart on a settings change does
+  // not ask again within the minute.
+  let lastRequestAt = 0
 
   plugin.schema = () => {
     const devices = knownDevices()
@@ -146,9 +154,6 @@ module.exports = function (app) {
       checkedAt: 0,
       heard: new HeardList(),
       sentAt: new Map(), // mmsi -> AISHub time of the record we last sent
-      // The plugin sees a copy of the server object taken when it was
-      // loaded, so the flag is a starting point and the event keeps it current.
-      outAvailable: !!app.isNmea2000OutAvailable,
       polls: 0,
       lastPoll: undefined,
       errors: 0,
@@ -171,21 +176,17 @@ module.exports = function (app) {
     }
     app.on('canboatjs:rawoutput', onRawLine)
 
-    onOutAvailable = () => { state.outAvailable = true }
-    app.on('nmea2000OutAvailable', onOutAvailable)
-
     statusTimer = setInterval(reportStatus, 10000)
     reportStatus()
     if (!config.apiKey || !config.mmsi) return
-    schedulePoll(1000)
+    schedulePoll(Math.max(1000, lastRequestAt + config.pollSeconds * 1000 - Date.now()))
   }
 
   plugin.stop = () => {
     clearTimeout(pollTimer)
     clearInterval(statusTimer)
     if (onRawLine) app.removeListener('canboatjs:rawoutput', onRawLine)
-    if (onOutAvailable) app.removeListener('nmea2000OutAvailable', onOutAvailable)
-    onRawLine = onOutAvailable = undefined
+    onRawLine = undefined
     state = undefined
   }
 
@@ -209,8 +210,10 @@ module.exports = function (app) {
     }
     const box = geo.boxAround(own.latitude, own.longitude, config.boxKm)
     state.polls++
+    lastRequestAt = Date.now()
+    const run = state
     const reply = await aishub.fetchVessels(config.apiKey, box)
-    if (!state) return // stopped while waiting
+    if (state !== run) return // stopped, or restarted with new settings, while waiting
     state.heard.prune(HEARD_KEEP_MS, Date.now())
     state.lastPoll = process(reply.vessels, Date.now(), own)
   }
@@ -228,12 +231,12 @@ module.exports = function (app) {
         continue
       }
       const ownAt = ownReceiverLastMessage(v.mmsi)
+      const lastSent = state.sentAt.get(v.mmsi)
       if (ownAt !== undefined && (v.time === undefined || v.time <= ownAt + CLOCK_TOLERANCE_MS)) {
         counts.ownReceiverHasIt++
-        decision(v, 'skip: own receiver has it', ownAt)
+        decision(v, 'skip: own receiver has it', ownAt, lastSent)
         continue
       }
-      const lastSent = state.sentAt.get(v.mmsi)
       if (lastSent !== undefined && v.time !== undefined && v.time <= lastSent) {
         sentNow.set(v.mmsi, lastSent)
         counts.alreadySent++
@@ -242,8 +245,12 @@ module.exports = function (app) {
       }
       const messages = [n2k.positionReport(v), ...n2k.staticData(v)]
       const delivered = messages.map(msg => send(msg, counts)).every(Boolean)
-      if (delivered) sentNow.set(v.mmsi, v.time)
-      counts.sentToPlotters++
+      if (delivered) {
+        sentNow.set(v.mmsi, v.time)
+        counts.sentToPlotters++
+      } else {
+        counts.notSentNoOutput++
+      }
       decision(v, ownAt === undefined ? 'would send: own receiver has never heard it' : 'would send: newer than own receiver\'s last message',
         ownAt, lastSent, messages.map(m => m.pgn))
     }
@@ -258,10 +265,7 @@ module.exports = function (app) {
       counts.messages++
       return true
     }
-    if (!state.outAvailable) {
-      counts.notSentNoOutput++
-      return false
-    }
+    if (!outAvailable) return false
     app.emit('nmea2000JsonOut', msg)
     counts.messages++
     return true
@@ -465,10 +469,11 @@ module.exports = function (app) {
     else if (last.skipped) parts.push(`not polling: ${last.skipped}`)
     else {
       parts.push(`last poll: ${last.fromAishub} from AISHub, ${last.ownReceiverHasIt} own receiver has, ` +
-        `${last.alreadySent} same report as last poll, ${last.sentToPlotters} ${config.dryRun ? 'would have been sent' : 'sent to plotters'} (${last.messages} messages)`)
+        `${last.alreadySent} same report as last poll, ${last.sentToPlotters} ${config.dryRun ? 'would have been sent' : 'sent to plotters'} (${last.messages} messages)` +
+        (last.notSentNoOutput ? `, ${last.notSentNoOutput} not sent (no NMEA 2000 output)` : ''))
     }
     if (config.dryRun) parts.push('dry run: decisions are in the server log')
-    else if (!state.outAvailable) parts.push(`NMEA 2000 output not available on ${config.connection}: restart Signal K to enable it (see README)`)
+    else if (!outAvailable) parts.push(`NMEA 2000 output not available on ${config.connection}: restart Signal K to enable it (see README)`)
     if (state.errors) parts.push(`${state.errors} errors (last: ${state.lastError})`)
     app.setPluginStatus(`${state.polls} polls. ${parts.join('; ')}`)
   }

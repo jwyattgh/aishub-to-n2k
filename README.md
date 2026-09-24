@@ -57,9 +57,10 @@ does exactly that.
 
 Signal K's NMEA 2000 connections receive by default. To send, the
 connection needs to claim an address on the bus, which happens when
-Signal K starts. If the plugin is switched on after that, its status
-reads "NMEA 2000 output not available on <connection>: restart Signal
-K to enable it", and nothing is sent until you do.
+Signal K starts. If the connection was only just set up to send, the
+plugin's status reads "NMEA 2000 output not available on <connection>:
+restart Signal K to enable it", and nothing is sent until you do.
+Changing the plugin's own settings, dry run included, needs no restart.
 
 For a Yacht Devices YDWG-02 gateway (UDP or TCP):
 
@@ -131,7 +132,9 @@ reads like:
 last poll: 42 from AISHub, 10 own receiver has, 3 same report as last poll, 28 sent to plotters (70 messages)
 ```
 
-In dry run the last part reads "28 would have been sent".
+In dry run the last part reads "28 would have been sent". If the
+connection cannot send yet, the vessels that were not sent are counted
+as "not sent (no NMEA 2000 output)".
 
 Errors from AISHub (a bad key, "Too frequent requests", a timeout) go
 to the server log and to the end of the status line, and the next poll

@@ -166,11 +166,32 @@ test('with output unavailable nothing is emitted, the status says to restart, an
     timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 0)
+    assert.match(app.status, /0 sent to plotters \(0 messages\), 1 not sent \(no NMEA 2000 output\)/)
     assert.match(app.status, /NMEA 2000 output not available on ydwg-n2k-udp: restart Signal K/)
     app.emit('nmea2000OutAvailable')
     timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 3, 'the unsent report was not counted as sent')
+    assert.match(app.status, /1 sent to plotters \(3 messages\)$/)
+  } finally {
+    plugin.stop()
+    restore()
+  }
+})
+
+test('output stays available across the restart a settings change gives the plugin', async t => {
+  const timers = fakeTimers(t)
+  const app = fakeApp()
+  app.isNmea2000OutAvailable = false // Signal K's copy of itself never changes this
+  const { plugin, restore } = startWith(app, {}, [[NEVER_HEARD]])
+  try {
+    app.emit('nmea2000OutAvailable') // the connection claimed its address after the plugin loaded
+    plugin.stop()
+    plugin.start({ apiKey: 'AH_TEST', connection: CONNECTION, devices: [AIS700], boxDistance: 50 })
+    timers.tick()
+    await settle()
+    assert.strictEqual(app.n2kOut.length, 3)
+    assert.doesNotMatch(app.status, /not available/)
   } finally {
     plugin.stop()
     restore()

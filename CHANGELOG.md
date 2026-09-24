@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.4
+
+- Changing a setting (dry run off, for one) no longer loses the NMEA
+  2000 output until Signal K is restarted. Signal K gives a plugin a copy
+  of the server taken when the plugin loads, and its "output available"
+  flag never changes on that copy; the plugin now keeps its own, outside
+  the start and stop a settings change causes.
+- After a settings change the plugin waits out the rest of the minute
+  before asking AISHub again, instead of getting "Too frequent requests".
+- A reply that arrives after a settings change is dropped rather than
+  handled with the new settings.
+- Vessels that could not be sent because the output was not available
+  are now counted as "not sent (no NMEA 2000 output)" in the status, not
+  as sent.
+- The dry-run line for "skip: own receiver has it" now shows when the
+  plugin last sent that vessel, instead of always "never".
+
 ## 0.1.3
 
 - Class A or class B is now chosen from the data, not from the IMO
