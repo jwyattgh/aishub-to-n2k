@@ -10,9 +10,10 @@
  *      last message time for each MMSI is read straight off the NMEA 2000
  *      bus (from the devices chosen in the settings) and from what Signal
  *      K already holds for that vessel from those devices.
- *      Also drop a vessel whose AISHub record is the same one we already
- *      sent, so a vessel that has gone quiet is not repeated: the plotter
- *      then drops it the way it drops any lost target.
+ *      The rest go every poll, even when AISHub's record is unchanged,
+ *      so the plotters keep the target through the gaps between a
+ *      vessel's reports. When AISHub drops a quiet vessel, the plotters
+ *      drop it the way they drop any lost target.
  *   4. Turn the rest into NMEA 2000 AIS messages: position, name and
  *      details, every poll.
  *   5. Hand those to the chosen NMEA 2000 connection, which sends them to
@@ -237,22 +238,23 @@ module.exports = function (app) {
         decision(v, 'skip: own receiver has it', ownAt, lastSent)
         continue
       }
-      if (lastSent !== undefined && v.time !== undefined && v.time <= lastSent) {
-        sentNow.set(v.mmsi, lastSent)
-        counts.alreadySent++
-        decision(v, 'skip: same report as last poll', ownAt, lastSent)
-        continue
-      }
+      // A record AISHub is still returning is sent again every poll, so the
+      // plotters keep the target through the gaps between the vessel's
+      // reports. When AISHub drops the vessel (about half an hour after its
+      // last report), the plotters drop it on their own lost-target timer.
+      const repeat = lastSent !== undefined && v.time !== undefined && v.time <= lastSent
       const messages = [n2k.positionReport(v), ...n2k.staticData(v)]
       const delivered = messages.map(msg => send(msg, counts)).every(Boolean)
       if (delivered) {
-        sentNow.set(v.mmsi, v.time)
+        sentNow.set(v.mmsi, repeat ? lastSent : v.time)
         counts.sentToPlotters++
+        if (repeat) counts.repeats++
       } else {
         counts.notSentNoOutput++
       }
-      decision(v, ownAt === undefined ? 'would send: own receiver has never heard it' : 'would send: newer than own receiver\'s last message',
-        ownAt, lastSent, messages.map(m => m.pgn))
+      decision(v, repeat ? 'would send again: same report as last poll'
+        : ownAt === undefined ? 'would send: own receiver has never heard it' : 'would send: newer than own receiver\'s last message',
+      ownAt, lastSent, messages.map(m => m.pgn))
     }
     state.sentAt = sentNow // vessels AISHub no longer lists are forgotten
     if (config.devices.length === 0) counts.warning = 'no AIS device chosen, so nothing is filtered out'
@@ -349,7 +351,7 @@ module.exports = function (app) {
       fromAishub: 0,
       ownVessel: 0,
       ownReceiverHasIt: 0,
-      alreadySent: 0,
+      repeats: 0,
       sentToPlotters: 0,
       messages: 0,
       notSentNoOutput: 0
@@ -469,7 +471,7 @@ module.exports = function (app) {
     else if (last.skipped) parts.push(`not polling: ${last.skipped}`)
     else {
       parts.push(`last poll: ${last.fromAishub} from AISHub, ${last.ownReceiverHasIt} own receiver has, ` +
-        `${last.alreadySent} same report as last poll, ${last.sentToPlotters} ${config.dryRun ? 'would have been sent' : 'sent to plotters'} (${last.messages} messages)` +
+        `${last.sentToPlotters} ${config.dryRun ? 'would have been sent' : 'sent to plotters'} (${last.repeats} repeats of the last report, ${last.messages} messages)` +
         (last.notSentNoOutput ? `, ${last.notSentNoOutput} not sent (no NMEA 2000 output)` : ''))
     }
     if (config.dryRun) parts.push('dry run: decisions are in the server log')

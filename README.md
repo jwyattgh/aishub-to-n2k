@@ -22,10 +22,12 @@ Every poll (61 seconds or slower, AISHub's rule):
    is left to your receiver. If AISHub's is newer (a vessel that has
    sailed out of your receiver's range, or one it has never heard), it is
    sent.
-   A record the plugin has already sent is not sent again. When a vessel
-   goes quiet, AISHub keeps returning its last record, but the plotters
-   get nothing more, so they drop the target on their own lost-target
-   timer, exactly as they do for a vessel your receiver loses.
+   Every vessel that passes is sent every poll, even when AISHub's
+   record has not changed since the last one, so the plotters keep the
+   target through the gaps between a vessel's reports (a moored ship
+   reports every three minutes, and AISHub's feeders miss some). When
+   a vessel goes quiet, AISHub drops it about half an hour later, and
+   the plotters then drop the target on their own lost-target timer.
 4. Turns the rest into the same NMEA 2000 AIS messages a transponder
    would send: class A position (PGN 129038) and static data (129794), or
    class B position (129039) and static data (129809, 129810). Position,
@@ -104,7 +106,7 @@ CAN hat) or an Actisense NGT-1 can send as delivered.
 
    ```
    aishub-to-n2k poll 12: 368341220 NAUTI DREAM | AISHub 16:54:05 | own receiver 16:54:05 | last sent never | 0.3 nm bearing 224 | 9.3341,-76.1204 | class B | sog 0 kn cog 271 hdg - rot - | nav 15 undefined | type 36 | callsign WDA1234 imo - | 12x4 m draught 0 m | dest - eta - | skip: own receiver has it
-   aishub-to-n2k poll 12: 227011340 ESPIGUETTE_RD | AISHub 16:40:23 | own receiver never | last sent 16:40:23 | 148.2 nm bearing 041 | 11.1234,-74.0012 | class A | sog 0.1 kn cog 180 hdg 90 rot 0 | nav 1 at anchor | type 70 | callsign FABC imo 9123456 | 180x28 m draught 9.5 m | dest CARTAGENA eta 09-26 06:00 | skip: same report as last poll
+   aishub-to-n2k poll 12: 227011340 ESPIGUETTE_RD | AISHub 16:40:23 | own receiver never | last sent 16:40:23 | 148.2 nm bearing 041 | 11.1234,-74.0012 | class A | sog 0.1 kn cog 180 hdg 90 rot 0 | nav 1 at anchor | type 70 | callsign FABC imo 9123456 | 180x28 m draught 9.5 m | dest CARTAGENA eta 09-26 06:00 | would send again: same report as last poll (PGNs 129038, 129794)
    aishub-to-n2k poll 12: 636024775 ISTANBUL EXPRESS | AISHub 16:55:50 | own receiver never | last sent 16:50:48 | 62.0 nm bearing 305 | 10.2210,-76.8801 | class A | sog 18.3 kn cog 296 hdg 295 rot 0 | nav 0 under way (engine) | type 71 | callsign D5XY7 imo 9234567 | 300x40 m draught 12.1 m | dest COLON eta 09-25 22:00 | would send: own receiver has never heard it (PGNs 129038, 129794)
    ```
 
@@ -116,10 +118,10 @@ CAN hat) or an Actisense NGT-1 can send as delivered.
    speed, course, heading, rate of turn, navigation status, ship type,
    callsign, IMO number, length by beam, draught, destination and ETA.
    A dash is a value AISHub did not have. The decision ends the line:
-   "would send" (a report your receiver does not have and the plugin has
-   not handled before), "skip: own receiver has it", or "skip: same
-   report as last poll" (AISHub is still returning the record the plugin
-   already handled, so there is nothing new).
+   "would send" (a report your receiver does not have), "would send
+   again: same report as last poll" (AISHub is still returning the record
+   the plugin last sent, so it goes again to keep the target on the
+   plotters), or "skip: own receiver has it".
 4. Untick **Dry run**. Targets appear on the plotters.
 
 ## Status
@@ -129,10 +131,10 @@ reads like:
 
 ```
 12 polls. own receiver c078c37ae76baa6d@1 has reported 11 vessels since start;
-last poll: 42 from AISHub, 10 own receiver has, 3 same report as last poll, 28 sent to plotters (70 messages)
+last poll: 42 from AISHub, 10 own receiver has, 31 sent to plotters (18 repeats of the last report, 75 messages)
 ```
 
-In dry run the last part reads "28 would have been sent". If the
+In dry run the last part reads "31 would have been sent". If the
 connection cannot send yet, the vessels that were not sent are counted
 as "not sent (no NMEA 2000 output)".
 
