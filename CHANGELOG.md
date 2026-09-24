@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+- Every dry-run log line now carries everything AISHub sent about the
+  vessel: distance and bearing from your boat, position, class, speed,
+  course, heading, rate of turn, navigation status, ship type, callsign,
+  IMO number, dimensions, draught, destination and ETA.
+
 ## 0.1.1
 
 The filter now works by time, and the plugin does only what it says.

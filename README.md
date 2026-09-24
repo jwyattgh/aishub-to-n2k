@@ -102,14 +102,19 @@ CAN hat) or an Actisense NGT-1 can send as delivered.
    vessel to the server log (Server → Server Log), like:
 
    ```
-   aishub-to-n2k poll 12: 368341220 NAUTI DREAM | AISHub 16:54:05 | own receiver 16:54:05 | last sent never | skip: own receiver has it
-   aishub-to-n2k poll 12: 227011340 ESPIGUETTE_RD | AISHub 16:40:23 | own receiver never | last sent 16:40:23 | skip: already sent this report
-   aishub-to-n2k poll 12: 636024775 ISTANBUL EXPRESS | AISHub 16:55:50 | own receiver never | last sent 16:50:48 | send: own receiver has never heard it (PGNs 129038, 129794)
+   aishub-to-n2k poll 12: 368341220 NAUTI DREAM | AISHub 16:54:05 | own receiver 16:54:05 | last sent never | 0.3 nm bearing 224 | 9.3341,-76.1204 | class B | sog 0 kn cog 271 hdg - rot - | nav 15 undefined | type 36 | callsign WDA1234 imo - | 12x4 m draught 0 m | dest - eta - | skip: own receiver has it
+   aishub-to-n2k poll 12: 227011340 ESPIGUETTE_RD | AISHub 16:40:23 | own receiver never | last sent 16:40:23 | 148.2 nm bearing 041 | 11.1234,-74.0012 | class A | sog 0.1 kn cog 180 hdg 90 rot 0 | nav 1 at anchor | type 70 | callsign FABC imo 9123456 | 180x28 m draught 9.5 m | dest CARTAGENA eta 09/26 06:00 | skip: already sent this report
+   aishub-to-n2k poll 12: 636024775 ISTANBUL EXPRESS | AISHub 16:55:50 | own receiver never | last sent 16:50:48 | 62.0 nm bearing 305 | 10.2210,-76.8801 | class A | sog 18.3 kn cog 296 hdg 295 rot 0 | nav 0 under way (engine) | type 71 | callsign D5XY7 imo 9234567 | 300x40 m draught 12.1 m | dest COLON eta 09/25 22:00 | send: own receiver has never heard it (PGNs 129038, 129794)
    ```
 
    The times are UTC. "AISHub" is the time on AISHub's record, "own
    receiver" the time of your receiver's last message from that vessel,
-   "last sent" the AISHub time of the record the plugin last sent.
+   "last sent" the AISHub time of the record the plugin last sent. Then
+   everything AISHub sent about the vessel: distance and bearing from
+   your boat (in the box unit), position, the class the plugin chose,
+   speed, course, heading, rate of turn, navigation status, ship type,
+   callsign, IMO number, length by beam, draught, destination and ETA.
+   A dash is a value AISHub did not have. The decision ends the line.
 4. Untick **Dry run**. Targets appear on the plotters.
 
 ## Status

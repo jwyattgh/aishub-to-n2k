@@ -192,9 +192,9 @@ test('dry run sends nothing and writes each decision to the server log', async t
     assert.strictEqual(app.n2kOut.length, 0)
     assert.match(app.status, /dry run/)
     assert.strictEqual(lines.length, 3)
-    assert.match(lines[0], /^aishub-to-n2k poll 1: 368066270 ORION \| AISHub \d\d:\d\d:\d\d \| own receiver never \| last sent never \| skip: own vessel$/)
-    assert.match(lines[1], /367704910 CARPE DIEM \| AISHub \d\d:\d\d:\d\d \| own receiver \d\d:\d\d:\d\d \| last sent never \| skip: own receiver has it$/)
-    assert.match(lines[2], /367642060 VIDA \| .* \| send: own receiver has never heard it \(PGNs 129039, 129809, 129810\)$/)
+    assert.match(lines[0], /^aishub-to-n2k poll 1: 368066270 ORION \| AISHub \d\d:\d\d:\d\d \| own receiver never \| last sent never \| \d+\.\d km bearing \d\d\d \| -?\d+\.\d{4},-?\d+\.\d{4} \| class B \| sog .* \| nav \d+ .* \| type \d+ \| callsign .* imo .* \| \d+x\d+ m draught .* \| dest .* eta .* \| skip: own vessel$/)
+    assert.match(lines[1], /367704910 CARPE DIEM \| AISHub \d\d:\d\d:\d\d \| own receiver \d\d:\d\d:\d\d \| last sent never \| .* \| skip: own receiver has it$/)
+    assert.match(lines[2], /367642060 VIDA \| .* \| class B \| .* \| send: own receiver has never heard it \(PGNs 129039, 129809, 129810\)$/)
   } finally {
     log.mock.restore()
     plugin.stop()

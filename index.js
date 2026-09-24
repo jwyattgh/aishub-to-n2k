@@ -35,6 +35,11 @@ const CLOCK_TOLERANCE_MS = 10 * 1000
 const KM_PER_UNIT = { km: 1, nm: 1.852, mi: 1.609344 }
 const UNIT_NAMES = { km: 'kilometres', nm: 'nautical miles', mi: 'statute miles' }
 const LOG_PREFIX = 'aishub-to-n2k'
+const NAV_STATUS = {
+  0: 'under way (engine)', 1: 'at anchor', 2: 'not under command', 3: 'restricted manoeuvrability',
+  4: 'constrained by draught', 5: 'moored', 6: 'aground', 7: 'fishing', 8: 'under way (sailing)',
+  14: 'AIS-SART', 15: 'undefined'
+}
 
 module.exports = function (app) {
   const plugin = {
@@ -130,6 +135,7 @@ module.exports = function (app) {
       mmsi: parseMmsi(options.mmsi) || parseMmsi(app.getSelfPath('mmsi')),
       boxKm: Math.max(1, distance) * KM_PER_UNIT[unit],
       boxText: `${Math.max(1, distance)} ${UNIT_NAMES[unit]}`,
+      unit,
       pollSeconds: Math.max(MIN_POLL_SECONDS, Number(options.pollSeconds) || MIN_POLL_SECONDS),
       connection: options.connection,
       devices: options.devices || [],
@@ -206,12 +212,13 @@ module.exports = function (app) {
     const reply = await aishub.fetchVessels(config.apiKey, box)
     if (!state) return // stopped while waiting
     state.heard.prune(HEARD_KEEP_MS, Date.now())
-    state.lastPoll = process(reply.vessels, Date.now())
+    state.lastPoll = process(reply.vessels, Date.now(), own)
   }
 
   // Steps 3, 4 and 5 for one reply.
-  function process (vessels, now) {
+  function process (vessels, now, own) {
     const counts = emptyCounters()
+    state.own = own
     counts.fromAishub = vessels.length
     const sentNow = new Map()
     for (const v of vessels) {
@@ -261,11 +268,33 @@ module.exports = function (app) {
   }
 
   // In a dry run, one line per vessel per poll in the server log.
+  // One line per vessel per poll in dry run: the decision, then everything
+  // AISHub sent about the vessel, with its distance and bearing from us.
   function decision (v, action, ownAt, lastSent, pgns) {
     if (!config.dryRun) return
     const when = t => t === undefined ? 'never' : new Date(t).toISOString().slice(11, 19)
     console.log(`${LOG_PREFIX} poll ${state.polls}: ${v.mmsi} ${v.name || '?'} | AISHub ${when(v.time)} | own receiver ${when(ownAt)}` +
-      ` | last sent ${when(lastSent)} | ${action}${pgns ? ` (PGNs ${pgns.join(', ')})` : ''}`)
+      ` | last sent ${when(lastSent)} | ${describe(v)} | ${action}${pgns ? ` (PGNs ${pgns.join(', ')})` : ''}`)
+  }
+
+  function describe (v) {
+    const or = (x, suffix = '') => x === undefined || x === '' ? '-' : `${x}${suffix}`
+    const own = state.own
+    const range = own
+      ? `${(geo.distanceKm(own.latitude, own.longitude, v.latitude, v.longitude) / KM_PER_UNIT[config.unit]).toFixed(1)} ${config.unit}` +
+        ` bearing ${String(geo.bearingDegrees(own.latitude, own.longitude, v.latitude, v.longitude)).padStart(3, '0')}`
+      : 'range -'
+    return [
+      range,
+      `${v.latitude.toFixed(4)},${v.longitude.toFixed(4)}`,
+      `class ${v.class}`,
+      `sog ${or(v.sogKnots, ' kn')} cog ${or(v.cogDegrees)} hdg ${or(v.headingDegrees)} rot ${or(v.rotCoded)}`,
+      `nav ${v.navStatus} ${NAV_STATUS[v.navStatus] || 'undefined'}`,
+      `type ${v.shipType}`,
+      `callsign ${or(v.callsign)} imo ${v.imo || '-'}`,
+      `${v.length}x${v.beam} m draught ${v.draught} m`,
+      `dest ${or(v.destination)} eta ${or(v.eta)}`
+    ].join(' | ')
   }
 
   // When did our own receiver last have a message from this vessel? The

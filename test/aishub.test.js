@@ -73,3 +73,19 @@ test('box', () => {
   const dateline = geo.boxAround(0, 179.9, 100)
   assert.strictEqual(dateline.lonmax, 180)
 })
+
+test('distance and bearing between two positions', () => {
+  // One degree of latitude is 60 nautical miles by definition (111.2 km).
+  const oneDegree = geo.distanceKm(10, -75, 11, -75)
+  assert.ok(Math.abs(oneDegree / 1.852 - 60) < 0.1, `${oneDegree} km`)
+  assert.strictEqual(geo.bearingDegrees(10, -75, 11, -75), 0)
+  assert.strictEqual(geo.bearingDegrees(10, -75, 10, -74), 90)
+  assert.strictEqual(geo.bearingDegrees(10, -75, 9, -75), 180)
+  assert.strictEqual(geo.distanceKm(10, -75, 10, -75), 0)
+  // Cartagena (Colombia) to Santa Marta: 0.84 degrees north, 1.32 degrees
+  // east at latitude 10.8, so 93.6 km by 143.8 km, 171.6 km on the diagonal.
+  const km = geo.distanceKm(10.3997, -75.5144, 11.2408, -74.1990)
+  assert.ok(Math.abs(km - 171.6) < 1, `${km} km`)
+  const brg = geo.bearingDegrees(10.3997, -75.5144, 11.2408, -74.1990)
+  assert.ok(brg > 55 && brg < 60, `${brg} degrees`)
+})
