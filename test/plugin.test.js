@@ -91,18 +91,21 @@ const FAR_SHIP = { ...BASE, MMSI: 311000123, NAME: 'BIG SHIP', IMO: 9123456, TYP
 // Let the poll's promise chain settle.
 const settle = () => new Promise(r => setImmediate(r))
 
-// Fake setTimeout so polls can be triggered without waiting 61 seconds.
-// Node 18 takes a list of timer names, Node 20+ an options object.
+// Fake setTimeout so polls can be triggered without waiting 61 seconds:
+// every pending timer fires on tick(). Plain replacement of the globals,
+// which works the same on every Node version.
 function fakeTimers (t) {
-  try {
-    t.mock.timers.enable({ apis: ['setTimeout'] })
-  } catch (err) {
-    t.mock.timers.enable(['setTimeout'])
-  }
+  const realSet = global.setTimeout
+  const realClear = global.clearTimeout
+  const pending = []
+  global.setTimeout = (fn, ms) => { const h = { fn, ms }; pending.push(h); return h }
+  global.clearTimeout = h => { const i = pending.indexOf(h); if (i >= 0) pending.splice(i, 1) }
+  t.after(() => { global.setTimeout = realSet; global.clearTimeout = realClear })
+  return { tick: () => pending.splice(0).forEach(h => h.fn()) }
 }
 
 test('sends only the vessels the own receiver does not have as new a message from', async t => {
-  fakeTimers(t)
+  const timers = fakeTimers(t)
   const app = fakeApp()
   app.isNmea2000OutAvailable = true
   // Signal K already holds NAUTI DREAM from the AIS700 (source label <connection>.<address>),
@@ -112,7 +115,7 @@ test('sends only the vessels the own receiver does not have as new a message fro
   const { plugin, restore } = startWith(app, {}, [[OWN, HEARD_ON_BUS, HEARD_IN_SIGNALK, NEWER_THAN_OWN, NEVER_HEARD, FAR_SHIP]])
   try {
     app.emit('canboatjs:rawoutput', busFrame(367704910)) // the AIS700 reports CARPE DIEM now
-    t.mock.timers.tick(1000)
+    timers.tick()
     await settle()
     assert.match(app.status, /6 from AISHub, 2 own receiver has, 0 already sent, 3 sent to plotters \(8 messages\)/)
     // DON TUTO and VIDA: class B position + two static messages; BIG SHIP: class A position + static
@@ -131,20 +134,20 @@ test('sends only the vessels the own receiver does not have as new a message fro
 })
 
 test('a report already sent is not sent again until AISHub has a newer one', async t => {
-  fakeTimers(t)
+  const timers = fakeTimers(t)
   const app = fakeApp()
   app.isNmea2000OutAvailable = true
   const newer = { ...NEVER_HEARD, TIME: timeAgo(-70) }
   const { plugin, restore } = startWith(app, {}, [[NEVER_HEARD, FAR_SHIP], [NEVER_HEARD, FAR_SHIP], [newer]])
   try {
-    t.mock.timers.tick(1000)
+    timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 5)
-    t.mock.timers.tick(61000)
+    timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 5, 'same two reports: nothing more sent')
     assert.match(app.status, /2 from AISHub, 0 own receiver has, 2 already sent, 0 sent to plotters/)
-    t.mock.timers.tick(61000)
+    timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 8, 'VIDA had a newer report: sent again, all three messages')
     assert.match(app.status, /1 from AISHub, 0 own receiver has, 0 already sent, 1 sent to plotters \(3 messages\)/)
@@ -155,17 +158,17 @@ test('a report already sent is not sent again until AISHub has a newer one', asy
 })
 
 test('with output unavailable nothing is emitted, the status says to restart, and the reports go once output is there', async t => {
-  fakeTimers(t)
+  const timers = fakeTimers(t)
   const app = fakeApp()
   app.isNmea2000OutAvailable = false
   const { plugin, restore } = startWith(app, {}, [[NEVER_HEARD]])
   try {
-    t.mock.timers.tick(1000)
+    timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 0)
     assert.match(app.status, /NMEA 2000 output not available on ydwg-n2k-udp: restart Signal K/)
     app.emit('nmea2000OutAvailable')
-    t.mock.timers.tick(61000)
+    timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 3, 'the unsent report was not counted as sent')
   } finally {
@@ -175,7 +178,7 @@ test('with output unavailable nothing is emitted, the status says to restart, an
 })
 
 test('dry run sends nothing and writes each decision to the server log', async t => {
-  fakeTimers(t)
+  const timers = fakeTimers(t)
   const app = fakeApp()
   app.isNmea2000OutAvailable = true
   const lines = []
@@ -183,7 +186,7 @@ test('dry run sends nothing and writes each decision to the server log', async t
   const { plugin, restore } = startWith(app, { dryRun: true }, [[OWN, HEARD_ON_BUS, NEVER_HEARD]])
   try {
     app.emit('canboatjs:rawoutput', busFrame(367704910))
-    t.mock.timers.tick(1000)
+    timers.tick()
     await settle()
     log.mock.restore()
     assert.strictEqual(app.n2kOut.length, 0)
@@ -200,15 +203,15 @@ test('dry run sends nothing and writes each decision to the server log', async t
 })
 
 test('box distance is converted from the chosen unit, and the old boxKm setting still works', async t => {
-  fakeTimers(t)
+  const timers = fakeTimers(t)
   const app = fakeApp()
   const width = box => box.latmax - box.latmin
   const a = startWith(app, { boxDistance: 100, boxUnit: 'nm' }, [[]])
-  t.mock.timers.tick(1000); await settle(); a.plugin.stop(); a.restore()
+  timers.tick(); await settle(); a.plugin.stop(); a.restore()
   const b = startWith(app, { boxDistance: 100, boxUnit: 'mi' }, [[]])
-  t.mock.timers.tick(1000); await settle(); b.plugin.stop(); b.restore()
+  timers.tick(); await settle(); b.plugin.stop(); b.restore()
   const c = startWith(app, { boxKm: 100 }, [[]])
-  t.mock.timers.tick(1000); await settle(); c.plugin.stop(); c.restore()
+  timers.tick(); await settle(); c.plugin.stop(); c.restore()
   assert.ok(Math.abs(width(c.boxes[0]) - 1.797) < 0.01, '100 km each way')
   assert.ok(Math.abs(width(a.boxes[0]) - 1.797 * 1.852) < 0.01, '100 nautical miles each way')
   assert.ok(Math.abs(width(b.boxes[0]) - 1.797 * 1.609344) < 0.01, '100 statute miles each way')
@@ -232,32 +235,32 @@ test('settings form: connections, AIS devices, own MMSI from Signal K, units, dr
 })
 
 test('no API key, or no MMSI anywhere: says so and does not poll', async t => {
-  fakeTimers(t)
+  const timers = fakeTimers(t)
   const app = fakeApp()
   const a = startWith(app, { apiKey: '' }, [[NEVER_HEARD]])
-  t.mock.timers.tick(1000); await settle()
+  timers.tick(); await settle()
   assert.match(app.status, /No AISHub API key/)
   assert.strictEqual(a.boxes.length, 0)
   a.plugin.stop(); a.restore()
   app.self.mmsi = undefined
   const b = startWith(app, { mmsi: '' }, [[NEVER_HEARD]])
-  t.mock.timers.tick(1000); await settle()
+  timers.tick(); await settle()
   assert.match(app.status, /No MMSI set/)
   assert.strictEqual(b.boxes.length, 0)
   b.plugin.stop(); b.restore()
 })
 
 test('no own position: the poll is skipped until there is one', async t => {
-  fakeTimers(t)
+  const timers = fakeTimers(t)
   const app = fakeApp()
   app.self.position = undefined
   const { plugin, boxes, restore } = startWith(app, {}, [[NEVER_HEARD]])
   try {
-    t.mock.timers.tick(1000); await settle()
+    timers.tick(); await settle()
     assert.strictEqual(boxes.length, 0)
     assert.match(app.status, /not polling: no own position yet/)
     app.self.position = { latitude: 18, longitude: -67 }
-    t.mock.timers.tick(61000); await settle()
+    timers.tick(); await settle()
     assert.strictEqual(boxes.length, 1)
   } finally {
     plugin.stop()
@@ -266,7 +269,7 @@ test('no own position: the poll is skipped until there is one', async t => {
 })
 
 test('an AISHub error goes to the server log and the status, and the next poll tries again', async t => {
-  fakeTimers(t)
+  const timers = fakeTimers(t)
   const app = fakeApp()
   app.isNmea2000OutAvailable = true
   const aishub = require('../lib/aishub')
@@ -280,10 +283,10 @@ test('an AISHub error goes to the server log and the status, and the next poll t
   const plugin = require('..')(app)
   plugin.start({ apiKey: 'AH_TEST', connection: CONNECTION, devices: [AIS700] })
   try {
-    t.mock.timers.tick(1000); await settle()
+    timers.tick(); await settle()
     assert.deepStrictEqual(app.errors, ['AISHub: Too frequent requests!'])
     assert.match(app.status, /1 errors \(last: AISHub: Too frequent requests!\)/)
-    t.mock.timers.tick(61000); await settle()
+    timers.tick(); await settle()
     assert.strictEqual(calls, 2)
     assert.strictEqual(app.n2kOut.length, 3)
   } finally {
