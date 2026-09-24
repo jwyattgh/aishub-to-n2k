@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.4
+## 0.1.5
 
 - Every vessel that passes the filter is now sent every poll, even when
   AISHub's record is unchanged, so the plotters keep the target through
@@ -10,6 +10,9 @@
   dropped (about half an hour after its last report) is dropped by the
   plotters on their own timer. The status now says how many of the sent
   vessels were repeats of the last report.
+
+## 0.1.4
+
 - Changing a setting (dry run off, for one) no longer loses the NMEA
   2000 output until Signal K is restarted. Signal K gives a plugin a copy
   of the server taken when the plugin loads, and its "output available"
