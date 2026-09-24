@@ -30,7 +30,7 @@ test('parses a reply into plain vessel records with AIS "not available" markers 
   assert.strictEqual(vessels.length, 2, 'the record without an MMSI is dropped')
   const [b, a] = vessels
   assert.strictEqual(b.mmsi, 368341220)
-  assert.strictEqual(b.class, 'B', 'no IMO number means class B')
+  assert.strictEqual(b.class, 'B', 'nothing that only a class A unit sends, so class B')
   assert.strictEqual(b.headingDegrees, undefined, '511 = heading not available')
   assert.strictEqual(b.rotCoded, undefined, '128 = rate of turn not available')
   assert.strictEqual(b.cogDegrees, 108.3)
@@ -45,6 +45,24 @@ test('parses a reply into plain vessel records with AIS "not available" markers 
   assert.strictEqual(a.rotCoded, 0)
   assert.strictEqual(a.draught, 7.5)
   assert.strictEqual(a.destination, 'SAN JUAN')
+  assert.strictEqual(b.eta, '', '"00-00 00:00" means no ETA')
+  assert.strictEqual(a.eta, '09-25 06:00')
+})
+
+test('class is chosen from the data, not from the IMO number', () => {
+  // Shaped like JAIRA PROVIDER as AISHub sent it: no IMO number, but a
+  // navigation status, destination, ETA and draught, which only class A
+  // units send. The own receiver heard it as class A.
+  const jaira = { MMSI: 341619002, TIME: '2026-09-24 19:57:48 GMT', LONGITUDE: -67.1611, LATITUDE: 18.2184, COG: 106.9, SOG: 0, HEADING: 511, ROT: 128, NAVSTAT: 2, IMO: 0, NAME: 'JAIRA PROVIDER', CALLSIGN: 'V4LM7', TYPE: 37, A: 33, B: 33, C: 6, D: 6, DRAUGHT: 2.5, DEST: 'STP', ETA: '10-22 13:00' }
+  assert.strictEqual(aishub.normalize(jaira).class, 'A')
+  const quiet = { ...jaira, NAVSTAT: 15, DRAUGHT: 0, DEST: '', ETA: '00-00 00:00' }
+  assert.strictEqual(aishub.normalize(quiet).class, 'B')
+  assert.strictEqual(aishub.normalize({ ...quiet, NAVSTAT: 0 }).class, 'A', 'navigation status alone')
+  assert.strictEqual(aishub.normalize({ ...quiet, DRAUGHT: 1.2 }).class, 'A', 'draught alone')
+  assert.strictEqual(aishub.normalize({ ...quiet, DEST: 'BOCA CHICA' }).class, 'A', 'destination alone')
+  assert.strictEqual(aishub.normalize({ ...quiet, ETA: '09-25 06:00' }).class, 'A', 'ETA alone')
+  assert.strictEqual(aishub.normalize({ ...quiet, ROT: 0 }).class, 'A', 'rate of turn alone')
+  assert.strictEqual(aishub.normalize({ ...quiet, IMO: 9507087 }).class, 'A', 'IMO number alone')
 })
 
 test('AISHub errors come back as errors', () => {

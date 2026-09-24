@@ -117,7 +117,7 @@ test('sends only the vessels the own receiver does not have as new a message fro
     app.emit('canboatjs:rawoutput', busFrame(367704910)) // the AIS700 reports CARPE DIEM now
     timers.tick()
     await settle()
-    assert.match(app.status, /6 from AISHub, 2 own receiver has, 0 already sent, 3 sent to plotters \(8 messages\)/)
+    assert.match(app.status, /6 from AISHub, 2 own receiver has, 0 same report as last poll, 3 sent to plotters \(8 messages\)/)
     // DON TUTO and VIDA: class B position + two static messages; BIG SHIP: class A position + static
     const byMmsi = {}
     app.n2kOut.forEach(m => { byMmsi[m['User ID']] = (byMmsi[m['User ID']] || []).concat(m.pgn) })
@@ -146,11 +146,11 @@ test('a report already sent is not sent again until AISHub has a newer one', asy
     timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 5, 'same two reports: nothing more sent')
-    assert.match(app.status, /2 from AISHub, 0 own receiver has, 2 already sent, 0 sent to plotters/)
+    assert.match(app.status, /2 from AISHub, 0 own receiver has, 2 same report as last poll, 0 sent to plotters/)
     timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 8, 'VIDA had a newer report: sent again, all three messages')
-    assert.match(app.status, /1 from AISHub, 0 own receiver has, 0 already sent, 1 sent to plotters \(3 messages\)/)
+    assert.match(app.status, /1 from AISHub, 0 own receiver has, 0 same report as last poll, 1 sent to plotters \(3 messages\)/)
   } finally {
     plugin.stop()
     restore()
@@ -194,7 +194,7 @@ test('dry run sends nothing and writes each decision to the server log', async t
     assert.strictEqual(lines.length, 3)
     assert.match(lines[0], /^aishub-to-n2k poll 1: 368066270 ORION \| AISHub \d\d:\d\d:\d\d \| own receiver never \| last sent never \| \d+\.\d km bearing \d\d\d \| -?\d+\.\d{4},-?\d+\.\d{4} \| class B \| sog .* \| nav \d+ .* \| type \d+ \| callsign .* imo .* \| \d+x\d+ m draught .* \| dest .* eta .* \| skip: own vessel$/)
     assert.match(lines[1], /367704910 CARPE DIEM \| AISHub \d\d:\d\d:\d\d \| own receiver \d\d:\d\d:\d\d \| last sent never \| .* \| skip: own receiver has it$/)
-    assert.match(lines[2], /367642060 VIDA \| .* \| class B \| .* \| send: own receiver has never heard it \(PGNs 129039, 129809, 129810\)$/)
+    assert.match(lines[2], /367642060 VIDA \| .* \| class B \| .* \| would send: own receiver has never heard it \(PGNs 129039, 129809, 129810\)$/)
   } finally {
     log.mock.restore()
     plugin.stop()

@@ -103,8 +103,8 @@ CAN hat) or an Actisense NGT-1 can send as delivered.
 
    ```
    aishub-to-n2k poll 12: 368341220 NAUTI DREAM | AISHub 16:54:05 | own receiver 16:54:05 | last sent never | 0.3 nm bearing 224 | 9.3341,-76.1204 | class B | sog 0 kn cog 271 hdg - rot - | nav 15 undefined | type 36 | callsign WDA1234 imo - | 12x4 m draught 0 m | dest - eta - | skip: own receiver has it
-   aishub-to-n2k poll 12: 227011340 ESPIGUETTE_RD | AISHub 16:40:23 | own receiver never | last sent 16:40:23 | 148.2 nm bearing 041 | 11.1234,-74.0012 | class A | sog 0.1 kn cog 180 hdg 90 rot 0 | nav 1 at anchor | type 70 | callsign FABC imo 9123456 | 180x28 m draught 9.5 m | dest CARTAGENA eta 09/26 06:00 | skip: already sent this report
-   aishub-to-n2k poll 12: 636024775 ISTANBUL EXPRESS | AISHub 16:55:50 | own receiver never | last sent 16:50:48 | 62.0 nm bearing 305 | 10.2210,-76.8801 | class A | sog 18.3 kn cog 296 hdg 295 rot 0 | nav 0 under way (engine) | type 71 | callsign D5XY7 imo 9234567 | 300x40 m draught 12.1 m | dest COLON eta 09/25 22:00 | send: own receiver has never heard it (PGNs 129038, 129794)
+   aishub-to-n2k poll 12: 227011340 ESPIGUETTE_RD | AISHub 16:40:23 | own receiver never | last sent 16:40:23 | 148.2 nm bearing 041 | 11.1234,-74.0012 | class A | sog 0.1 kn cog 180 hdg 90 rot 0 | nav 1 at anchor | type 70 | callsign FABC imo 9123456 | 180x28 m draught 9.5 m | dest CARTAGENA eta 09-26 06:00 | skip: same report as last poll
+   aishub-to-n2k poll 12: 636024775 ISTANBUL EXPRESS | AISHub 16:55:50 | own receiver never | last sent 16:50:48 | 62.0 nm bearing 305 | 10.2210,-76.8801 | class A | sog 18.3 kn cog 296 hdg 295 rot 0 | nav 0 under way (engine) | type 71 | callsign D5XY7 imo 9234567 | 300x40 m draught 12.1 m | dest COLON eta 09-25 22:00 | would send: own receiver has never heard it (PGNs 129038, 129794)
    ```
 
    The times are UTC. "AISHub" is the time on AISHub's record, "own
@@ -114,7 +114,11 @@ CAN hat) or an Actisense NGT-1 can send as delivered.
    your boat (in the box unit), position, the class the plugin chose,
    speed, course, heading, rate of turn, navigation status, ship type,
    callsign, IMO number, length by beam, draught, destination and ETA.
-   A dash is a value AISHub did not have. The decision ends the line.
+   A dash is a value AISHub did not have. The decision ends the line:
+   "would send" (a report your receiver does not have and the plugin has
+   not handled before), "skip: own receiver has it", or "skip: same
+   report as last poll" (AISHub is still returning the record the plugin
+   already handled, so there is nothing new).
 4. Untick **Dry run**. Targets appear on the plotters.
 
 ## Status
@@ -124,8 +128,10 @@ reads like:
 
 ```
 12 polls. own receiver c078c37ae76baa6d@1 has reported 11 vessels since start;
-last poll: 42 from AISHub, 10 own receiver has, 3 already sent, 28 sent to plotters (70 messages)
+last poll: 42 from AISHub, 10 own receiver has, 3 same report as last poll, 28 sent to plotters (70 messages)
 ```
+
+In dry run the last part reads "28 would have been sent".
 
 Errors from AISHub (a bad key, "Too frequent requests", a timeout) go
 to the server log and to the end of the status line, and the next poll
@@ -136,6 +142,14 @@ tries again.
 The messages carry the plugin's connection address as their source, so
 on the bus they come from the gateway (or CAN interface), not from your
 AIS receiver.
+
+AISHub does not say whether a vessel has a class A or class B
+transponder, so the plugin chooses the message format from the data it
+holds. A vessel with anything only the class A messages can carry
+(navigation status, destination, ETA, draught, rate of turn, IMO number)
+is sent as class A, so none of it is dropped. Everything else is sent as
+class B. ETA is not sent yet: the NMEA 2000 message wants a full date and
+AISHub gives only month, day and time.
 
 Values AISHub does not have (heading 511, course 360, speed 102.4) are
 sent as "not available", exactly as a transponder would.

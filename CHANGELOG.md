@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.3
+
+- Class A or class B is now chosen from the data, not from the IMO
+  number. A vessel with a navigation status, destination, ETA, draught,
+  rate of turn or IMO number is sent as class A, so none of it is
+  dropped; the rest as class B. Ships without an IMO number (tugs, pilot
+  boats, coasters) were being sent as class B and losing their status
+  and destination.
+- Dry-run log and status now say "would send" and "would have been
+  sent". "already sent this report" is now "same report as last poll"
+  in both.
+- "00-00 00:00" from AISHub is read as no ETA.
+
 ## 0.1.2
 
 - Every dry-run log line now carries everything AISHub sent about the

@@ -237,14 +237,14 @@ module.exports = function (app) {
       if (lastSent !== undefined && v.time !== undefined && v.time <= lastSent) {
         sentNow.set(v.mmsi, lastSent)
         counts.alreadySent++
-        decision(v, 'skip: already sent this report', ownAt, lastSent)
+        decision(v, 'skip: same report as last poll', ownAt, lastSent)
         continue
       }
       const messages = [n2k.positionReport(v), ...n2k.staticData(v)]
       const delivered = messages.map(msg => send(msg, counts)).every(Boolean)
       if (delivered) sentNow.set(v.mmsi, v.time)
       counts.sentToPlotters++
-      decision(v, ownAt === undefined ? 'send: own receiver has never heard it' : 'send: newer than own receiver\'s last message',
+      decision(v, ownAt === undefined ? 'would send: own receiver has never heard it' : 'would send: newer than own receiver\'s last message',
         ownAt, lastSent, messages.map(m => m.pgn))
     }
     state.sentAt = sentNow // vessels AISHub no longer lists are forgotten
@@ -465,7 +465,7 @@ module.exports = function (app) {
     else if (last.skipped) parts.push(`not polling: ${last.skipped}`)
     else {
       parts.push(`last poll: ${last.fromAishub} from AISHub, ${last.ownReceiverHasIt} own receiver has, ` +
-        `${last.alreadySent} already sent, ${last.sentToPlotters} sent to plotters (${last.messages} messages)`)
+        `${last.alreadySent} same report as last poll, ${last.sentToPlotters} ${config.dryRun ? 'would have been sent' : 'sent to plotters'} (${last.messages} messages)`)
     }
     if (config.dryRun) parts.push('dry run: decisions are in the server log')
     else if (!state.outAvailable) parts.push(`NMEA 2000 output not available on ${config.connection}: restart Signal K to enable it (see README)`)
