@@ -1,0 +1,65 @@
+name: publish
+
+# Runs on every push to main. If the version in package.json is not yet on
+# npm, it is staged there; it goes public once a maintainer approves it on
+# npmjs.com. Pushes that do not change the version do nothing.
+#
+# Authenticates with npm trusted publishing (OIDC): no npm token is stored
+# anywhere. The package's Trusted Publisher on npmjs.com must point at this
+# repository and this file name (publish.yml).
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write # lets npm verify this run came from this repo/workflow
+  contents: write # to tag the published commit
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24' # npm 11.5.1+ is required for trusted publishing
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      - run: npm test
+      - name: Is this version already on npm?
+        id: check
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published; nothing to do"
+            echo "publish=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "$name@$version is not on npm yet; staging it"
+            echo "publish=yes" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Stage on npm
+        if: steps.check.outputs.publish == 'yes'
+        run: |
+          set +e
+          out="$(npm stage publish --provenance --access public 2>&1)"
+          rc=$?
+          set -e
+          echo "$out"
+          if [ $rc -ne 0 ] && echo "$out" | grep -qiE 'already|staged'; then
+            echo "::notice::Version ${{ steps.check.outputs.version }} is already staged and waiting for approval on npmjs.com"
+            exit 0
+          fi
+          exit $rc
+      - name: Tag the published commit
+        if: steps.check.outputs.publish == 'yes'
+        run: |
+          tag="v${{ steps.check.outputs.version }}"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null || git ls-remote --exit-code --tags origin "$tag" >/dev/null 2>&1; then
+            echo "$tag already exists"
+          else
+            git tag "$tag"
+            git push origin "$tag"
+          fi

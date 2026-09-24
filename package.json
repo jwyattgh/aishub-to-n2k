@@ -1,0 +1,38 @@
+{
+  "name": "@sv-orion/aishub-to-n2k",
+  "version": "0.1.0",
+  "description": "Signal K plugin: fetch vessels from AISHub, drop the ones your own AIS receiver hears, and send the rest to the NMEA 2000 bus for your plotters",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "lib/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "signalk-node-server-plugin",
+    "signalk-category-ais",
+    "signalk-category-nmea-2000"
+  ],
+  "author": "Jason Wyatt",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jwyattgh/aishub-to-n2k.git"
+  },
+  "homepage": "https://github.com/jwyattgh/aishub-to-n2k#readme",
+  "bugs": {
+    "url": "https://github.com/jwyattgh/aishub-to-n2k/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@canboat/canboatjs": "^3.20.0"
+  }
+}
