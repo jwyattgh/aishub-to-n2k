@@ -1,5 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert')
+const { setTimeout: wait } = require('node:timers/promises')
 const EventEmitter = require('events')
 
 const AIS700 = 'c078c37ae76baa6d'
@@ -64,6 +65,7 @@ function startWith (app, options, replies) {
     apiKey: 'AH_TEST',
     connection: CONNECTION,
     devices: [AIS700],
+    sendSpacingMs: 0, // straight to the bus, so the tests can count at once
     ...options
   })
   return { plugin, boxes, restore: () => { aishub.fetchVessels = original } }
@@ -242,7 +244,7 @@ test('output stays available across the restart a settings change gives the plug
   try {
     app.emit('nmea2000OutAvailable') // the connection claimed its address after the plugin loaded
     plugin.stop()
-    plugin.start({ apiKey: 'AH_TEST', connection: CONNECTION, devices: [AIS700], boxDistance: 50 })
+    plugin.start({ apiKey: 'AH_TEST', connection: CONNECTION, devices: [AIS700], boxDistance: 50, sendSpacingMs: 0 })
     timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 3)
@@ -357,7 +359,7 @@ test('an AISHub error goes to the server log and the status, and the next poll t
     return { header: {}, vessels: [aishub.normalize(NEVER_HEARD)] }
   }
   const plugin = require('..')(app)
-  plugin.start({ apiKey: 'AH_TEST', connection: CONNECTION, devices: [AIS700] })
+  plugin.start({ apiKey: 'AH_TEST', connection: CONNECTION, devices: [AIS700], sendSpacingMs: 0 })
   try {
     timers.tick(); await settle()
     assert.deepStrictEqual(app.errors, ['AISHub: Too frequent requests!'])
@@ -369,4 +371,36 @@ test('an AISHub error goes to the server log and the status, and the next poll t
     plugin.stop()
     aishub.fetchVessels = original
   }
+})
+
+test('messages go to the bus spaced out, not in one burst', async t => {
+  const timers = fakeTimers(t)
+  const app = fakeApp()
+  app.isNmea2000OutAvailable = true
+  const { plugin, restore } = startWith(app, { sendSpacingMs: 20 }, [[NEVER_HEARD, FAR_SHIP]])
+  try {
+    timers.tick()
+    await settle()
+    assert.match(app.status, /2 sent to plotters \(0 repeats of the last report, 0 held while AISHub is quiet, 5 messages\)/)
+    assert.strictEqual(app.n2kOut.length, 0, 'nothing on the bus yet: the first message waits its 20 ms')
+    await wait(50) // real timer: the fake one never fires
+    assert.ok(app.n2kOut.length >= 1 && app.n2kOut.length <= 3, `after 50 ms, one to three messages, not all five: ${app.n2kOut.length}`)
+    await wait(120)
+    assert.strictEqual(app.n2kOut.length, 5, 'all five out within 170 ms')
+    assert.deepStrictEqual(app.n2kOut.map(m => m['User ID']), [367642060, 367642060, 367642060, 311000123, 311000123], 'in the order they were queued')
+  } finally { restore(); plugin.stop() }
+})
+
+test('messages still waiting when the next poll comes are dropped, and counted', async t => {
+  const timers = fakeTimers(t)
+  const app = fakeApp()
+  app.isNmea2000OutAvailable = true
+  const { plugin, restore } = startWith(app, { sendSpacingMs: 100000 }, [[NEVER_HEARD, FAR_SHIP]])
+  try {
+    timers.tick()
+    await settle()
+    timers.tick()
+    await settle()
+    assert.match(app.status, /5 messages\), 5 messages from the poll before still waiting for the bus were dropped/)
+  } finally { restore(); plugin.stop() }
 })

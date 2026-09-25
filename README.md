@@ -43,7 +43,13 @@ Every poll (61 seconds or slower, AISHub's rule):
    class B position (129039) and static data (129809, 129810). Position,
    name and details go every poll.
 5. Hands them to the NMEA 2000 connection you chose, which sends them to
-   the bus. The plotters show the targets like any other AIS target.
+   the bus, one message every tenth of a second. Sent all at once, a
+   poll's worth leaves the gateway in under a second, and a YDWG-02
+   drops the tail of such a burst: on the author's boat a quarter of the
+   vessels never reached the bus, the same ones every poll. Spread out,
+   twenty-five vessels take about five seconds of the minute. Messages
+   still waiting when the next poll comes are dropped and counted. The
+   plotters show the targets like any other AIS target.
 
 The plugin never sends anything to AISHub except the request itself.
 AISHub's terms forbid feeding its data, or anything made from it, back
@@ -107,6 +113,9 @@ CAN hat) or an Actisense NGT-1 can send as delivered.
      (kilometres, nautical miles or statute miles). 100 km is plenty
      coastal; go large offshore if you want to know who is out there.
    - **Seconds between requests**: 61 or more.
+   - **Milliseconds between messages to the bus**: 100 unless your
+     gateway is known to cope with a burst; 0 sends a poll's messages
+     all at once.
    - **Connection**: the NMEA 2000 connection to send on.
    - **Your own AIS receivers**: tick them. Vessels they hear are not
      sent to the plotters.
@@ -150,7 +159,10 @@ last poll: 42 from AISHub, 10 own receiver has, 33 sent to plotters (18 repeats 
 "Held while AISHub is quiet" counts the vessels sent although AISHub
 left them out of this reply. When a hold runs out the status adds
 "1 dropped after AISHub went quiet" for that poll. In dry run the
-sent part reads "33 would have been sent". If the connection cannot
+sent part reads "33 would have been sent". If messages from the previous
+poll were still waiting for the bus when the next poll came, the status
+adds how many were dropped; that means the spacing times the message
+count exceeds the poll interval. If the connection cannot
 send yet, the vessels that were not sent are counted as "not sent (no
 NMEA 2000 output)".
 

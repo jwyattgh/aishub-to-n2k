@@ -40,6 +40,11 @@ const CLOCK_TOLERANCE_MS = 10 * 1000
 const HOLD_PADDING = 1.25
 const GAP_HISTORY = 10 // gaps per vessel the average is taken over
 const ANCHORED_REPORT_MS = 3 * 60 * 1000 // AIS reporting interval of a ship at anchor
+// Messages go to the bus this far apart. Sent all at once, a poll's worth
+// (two or three messages per vessel, five or six frames each) leaves the
+// gateway in well under a second, and a YDWG-02 drops the tail of such a
+// burst: on the author's boat a third of the vessels never reached the bus.
+const SEND_SPACING_MS = 100
 const KM_PER_UNIT = { km: 1, nm: 1.852, mi: 1.609344 }
 const UNIT_NAMES = { km: 'kilometres', nm: 'nautical miles', mi: 'statute miles' }
 const LOG_PREFIX = 'aishub-to-n2k'
@@ -62,6 +67,7 @@ module.exports = function (app) {
   let onRawLine
   let pollTimer
   let statusTimer
+  let drainTimer
   // Signal K hands a plugin a copy of the server object, taken when the
   // plugin is loaded, so app.isNmea2000OutAvailable on it keeps its
   // loading-time value. Keep the flag here, outside start and stop, so it
@@ -120,6 +126,12 @@ module.exports = function (app) {
           default: MIN_POLL_SECONDS,
           minimum: MIN_POLL_SECONDS
         },
+        sendSpacingMs: {
+          type: 'number',
+          title: `Milliseconds between messages to the bus (${SEND_SPACING_MS} keeps a gateway from dropping the end of a burst; 0 sends them all at once)`,
+          default: SEND_SPACING_MS,
+          minimum: 0
+        },
         connection: connectionItem,
         devices: {
           type: 'array',
@@ -137,7 +149,7 @@ module.exports = function (app) {
   }
 
   plugin.uiSchema = () => ({
-    'ui:order': ['apiKey', 'mmsi', 'boxDistance', 'boxUnit', 'pollSeconds', 'connection', 'devices', 'dryRun'],
+    'ui:order': ['apiKey', 'mmsi', 'boxDistance', 'boxUnit', 'pollSeconds', 'sendSpacingMs', 'connection', 'devices', 'dryRun'],
     apiKey: { 'ui:widget': 'password' },
     devices: { 'ui:widget': 'checkboxes' }
   })
@@ -153,6 +165,7 @@ module.exports = function (app) {
       boxText: `${Math.max(1, distance)} ${UNIT_NAMES[unit]}`,
       unit,
       pollSeconds: Math.max(MIN_POLL_SECONDS, Number(options.pollSeconds) || MIN_POLL_SECONDS),
+      sendSpacingMs: options.sendSpacingMs === undefined ? SEND_SPACING_MS : Math.max(0, Number(options.sendSpacingMs) || 0),
       connection: options.connection,
       devices: options.devices || [],
       dryRun: options.dryRun === true
@@ -165,6 +178,7 @@ module.exports = function (app) {
       // it, gaps: ms between its recent reports, sentTime: AISHub time of
       // the record last sent }
       tracked: new Map(),
+      queue: [], // messages waiting their turn on the bus
       polls: 0,
       lastPoll: undefined,
       errors: 0,
@@ -196,6 +210,8 @@ module.exports = function (app) {
   plugin.stop = () => {
     clearTimeout(pollTimer)
     clearInterval(statusTimer)
+    clearInterval(drainTimer)
+    drainTimer = undefined
     if (onRawLine) app.removeListener('canboatjs:rawoutput', onRawLine)
     onRawLine = undefined
     state = undefined
@@ -234,6 +250,8 @@ module.exports = function (app) {
     const counts = emptyCounters()
     state.own = own
     counts.fromAishub = vessels.length
+    // Anything still waiting from the last poll is out of date now.
+    counts.leftOver = state.queue.splice(0).length
     const listed = new Set()
     for (const v of vessels) {
       if (v.mmsi === config.mmsi) {
@@ -356,8 +374,23 @@ module.exports = function (app) {
       return true
     }
     if (!outAvailable) return false
-    app.emit('nmea2000JsonOut', msg)
     counts.messages++
+    if (config.sendSpacingMs === 0) {
+      app.emit('nmea2000JsonOut', msg)
+      return true
+    }
+    state.queue.push(msg)
+    if (!drainTimer) {
+      drainTimer = setInterval(() => {
+        const next = state && state.queue.shift()
+        if (!next) {
+          clearInterval(drainTimer)
+          drainTimer = undefined
+          return
+        }
+        app.emit('nmea2000JsonOut', next)
+      }, config.sendSpacingMs)
+    }
     return true
   }
 
@@ -444,6 +477,7 @@ module.exports = function (app) {
       dropped: 0,
       sentToPlotters: 0,
       messages: 0,
+      leftOver: 0,
       notSentNoOutput: 0
     }
   }
@@ -564,7 +598,8 @@ module.exports = function (app) {
         `${last.sentToPlotters} ${config.dryRun ? 'would have been sent' : 'sent to plotters'} (${last.repeats} repeats of the last report, ` +
         `${last.held} held while AISHub is quiet, ${last.messages} messages)` +
         (last.dropped ? `, ${last.dropped} dropped after AISHub went quiet` : '') +
-        (last.notSentNoOutput ? `, ${last.notSentNoOutput} not sent (no NMEA 2000 output)` : ''))
+        (last.notSentNoOutput ? `, ${last.notSentNoOutput} not sent (no NMEA 2000 output)` : '') +
+        (last.leftOver ? `, ${last.leftOver} messages from the poll before still waiting for the bus were dropped` : ''))
     }
     if (config.dryRun) parts.push('dry run: decisions are in the server log')
     else if (!outAvailable) parts.push(`NMEA 2000 output not available on ${config.connection}: restart Signal K to enable it (see README)`)

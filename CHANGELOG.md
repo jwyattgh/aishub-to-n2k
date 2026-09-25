@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.7
+
+- Messages go to the bus one every 100 ms instead of all at once. A
+  poll's worth (48 messages, five or six frames each) was leaving the
+  gateway in half a second, and the YDWG-02 dropped the tail of the
+  burst: on the author's boat 23 vessels were sent each poll and 17 or
+  18 reached the bus, the same ones missing every time, since 0.1.0.
+  The AIS receiver's own messages on the same gateway arrive complete.
+  New setting "Milliseconds between messages to the bus", default 100;
+  0 restores the burst. Messages still waiting when the next poll comes
+  are dropped and counted in the status.
+
 ## 0.1.6
 
 - A vessel AISHub leaves out of a reply is no longer forgotten that
