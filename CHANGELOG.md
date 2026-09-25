@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.6
+
+- A vessel AISHub leaves out of a reply is no longer forgotten that
+  same poll. It is kept, and sent again every poll, until AISHub has
+  been quiet about it for longer than the vessel's own average gap
+  between reports, padded by a quarter, and never less than two polls.
+  AISHub's replies have holes (a vessel drops out for a poll or five and
+  comes back), and 0.1.5 stopped sending the vessel the moment it was
+  missing, so quiet vessels still blinked on the plotters. The gap is
+  measured from AISHub's report times over the vessel's last ten
+  reports; a vessel with no history gets the average over the vessels
+  held, or three minutes. A held vessel the own receiver starts hearing
+  is dropped at once. The status now counts "held while AISHub is
+  quiet" and "dropped after AISHub went quiet", and the dry-run line
+  says how long a vessel has been missing and how long its hold is.
+
 ## 0.1.5
 
 - Every vessel that passes the filter is now sent every poll, even when

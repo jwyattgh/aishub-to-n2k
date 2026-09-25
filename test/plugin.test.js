@@ -117,7 +117,7 @@ test('sends only the vessels the own receiver does not have as new a message fro
     app.emit('canboatjs:rawoutput', busFrame(367704910)) // the AIS700 reports CARPE DIEM now
     timers.tick()
     await settle()
-    assert.match(app.status, /6 from AISHub, 2 own receiver has, 3 sent to plotters \(0 repeats of the last report, 8 messages\)/)
+    assert.match(app.status, /6 from AISHub, 2 own receiver has, 3 sent to plotters \(0 repeats of the last report, 0 held while AISHub is quiet, 8 messages\)/)
     // DON TUTO and VIDA: class B position + two static messages; BIG SHIP: class A position + static
     const byMmsi = {}
     app.n2kOut.forEach(m => { byMmsi[m['User ID']] = (byMmsi[m['User ID']] || []).concat(m.pgn) })
@@ -146,11 +146,66 @@ test('a report AISHub keeps returning is sent again every poll, so the plotters 
     timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 10, 'same two reports: sent again')
-    assert.match(app.status, /2 from AISHub, 0 own receiver has, 2 sent to plotters \(2 repeats of the last report, 5 messages\)/)
+    assert.match(app.status, /2 from AISHub, 0 own receiver has, 2 sent to plotters \(2 repeats of the last report, 0 held while AISHub is quiet, 5 messages\)/)
     timers.tick()
     await settle()
-    assert.strictEqual(app.n2kOut.length, 13, 'VIDA had a newer report, BIG SHIP is gone from AISHub')
-    assert.match(app.status, /1 from AISHub, 0 own receiver has, 1 sent to plotters \(0 repeats of the last report, 3 messages\)/)
+    assert.strictEqual(app.n2kOut.length, 15, 'VIDA had a newer report; BIG SHIP, left out by AISHub, is held and sent again')
+    assert.match(app.status, /1 from AISHub, 0 own receiver has, 2 sent to plotters \(1 repeats of the last report, 1 held while AISHub is quiet, 5 messages\)/)
+  } finally {
+    plugin.stop()
+    restore()
+  }
+})
+
+test('a vessel AISHub leaves out is held for its own padded gap between reports, then dropped', async t => {
+  const timers = fakeTimers(t)
+  const app = fakeApp()
+  app.isNmea2000OutAvailable = true
+  const vida = { ...NEVER_HEARD, TIME: timeAgo(0) }
+  const vidaLater = { ...NEVER_HEARD, TIME: timeAgo(-70) } // reported again 70 s later
+  const { plugin, restore } = startWith(app, {}, [[vida, FAR_SHIP], [vidaLater, FAR_SHIP], [FAR_SHIP]])
+  const realNow = Date.now
+  let offset = 0
+  Date.now = () => realNow() + offset
+  try {
+    timers.tick(); await settle()
+    timers.tick(); await settle()
+    assert.strictEqual(app.n2kOut.length, 10)
+    // VIDA's gap between reports is 70 s; padded that is 88 s, but the hold
+    // is never under two polls (122 s). 60 s of silence: still held.
+    offset = 60 * 1000
+    timers.tick(); await settle()
+    assert.strictEqual(app.n2kOut.length, 15, 'VIDA held and sent, BIG SHIP repeated')
+    assert.match(app.status, /1 from AISHub, 0 own receiver has, 2 sent to plotters \(2 repeats of the last report, 1 held while AISHub is quiet, 5 messages\)$/)
+    // 130 s of silence: past the hold, dropped.
+    offset = 130 * 1000
+    timers.tick(); await settle()
+    assert.strictEqual(app.n2kOut.length, 17, 'only BIG SHIP now')
+    assert.match(app.status, /1 sent to plotters \(1 repeats of the last report, 0 held while AISHub is quiet, 2 messages\), 1 dropped after AISHub went quiet/)
+    assert.deepStrictEqual(app.n2kOut.slice(15).map(m => m['User ID']), [311000123, 311000123])
+    // Once dropped it stays dropped until AISHub lists it again.
+    timers.tick(); await settle()
+    assert.strictEqual(app.n2kOut.length, 19)
+    assert.match(app.status, /0 held while AISHub is quiet, 2 messages\)$/)
+  } finally {
+    Date.now = realNow
+    plugin.stop()
+    restore()
+  }
+})
+
+test('a held vessel the own receiver starts hearing is dropped at once', async t => {
+  const timers = fakeTimers(t)
+  const app = fakeApp()
+  app.isNmea2000OutAvailable = true
+  const { plugin, restore } = startWith(app, {}, [[NEVER_HEARD], []])
+  try {
+    timers.tick(); await settle()
+    assert.strictEqual(app.n2kOut.length, 3)
+    app.emit('canboatjs:rawoutput', busFrame(367642060)) // the AIS700 reports VIDA now
+    timers.tick(); await settle()
+    assert.strictEqual(app.n2kOut.length, 3, 'nothing more sent')
+    assert.match(app.status, /0 from AISHub, 1 own receiver has, 0 sent to plotters/)
   } finally {
     plugin.stop()
     restore()
@@ -166,13 +221,13 @@ test('with output unavailable nothing is emitted, the status says to restart, an
     timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 0)
-    assert.match(app.status, /0 sent to plotters \(0 repeats of the last report, 0 messages\), 1 not sent \(no NMEA 2000 output\)/)
+    assert.match(app.status, /0 sent to plotters \(0 repeats of the last report, 0 held while AISHub is quiet, 0 messages\), 1 not sent \(no NMEA 2000 output\)/)
     assert.match(app.status, /NMEA 2000 output not available on ydwg-n2k-udp: restart Signal K/)
     app.emit('nmea2000OutAvailable')
     timers.tick()
     await settle()
     assert.strictEqual(app.n2kOut.length, 3, 'the unsent report was not counted as sent')
-    assert.match(app.status, /1 sent to plotters \(0 repeats of the last report, 3 messages\)$/)
+    assert.match(app.status, /1 sent to plotters \(0 repeats of the last report, 0 held while AISHub is quiet, 3 messages\)$/)
   } finally {
     plugin.stop()
     restore()

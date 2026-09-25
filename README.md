@@ -25,9 +25,19 @@ Every poll (61 seconds or slower, AISHub's rule):
    Every vessel that passes is sent every poll, even when AISHub's
    record has not changed since the last one, so the plotters keep the
    target through the gaps between a vessel's reports (a moored ship
-   reports every three minutes, and AISHub's feeders miss some). When
-   a vessel goes quiet, AISHub drops it about half an hour later, and
-   the plotters then drop the target on their own lost-target timer.
+   reports every three minutes, and AISHub's feeders miss some).
+   AISHub's replies also have holes: a vessel drops out of the list for
+   a poll or five and comes back. So a vessel AISHub leaves out is kept,
+   and sent again every poll, until AISHub has been quiet about it for
+   longer than that vessel's own average gap between reports, padded by
+   a quarter. The plugin measures the gap itself from AISHub's report
+   times, over the vessel's last ten reports. A vessel with no history
+   yet gets the average over all the vessels held, or three minutes (a
+   ship at anchor's reporting interval) when there is none. The hold is
+   never under two polls, so one missing reply never drops anything.
+   Once the hold runs out the vessel is dropped, and the plotters drop
+   the target on their own lost-target timer. A held vessel your own
+   receiver starts hearing is dropped at once.
 4. Turns the rest into the same NMEA 2000 AIS messages a transponder
    would send: class A position (PGN 129038) and static data (129794), or
    class B position (129039) and static data (129809, 129810). Position,
@@ -121,7 +131,10 @@ CAN hat) or an Actisense NGT-1 can send as delivered.
    "would send" (a report your receiver does not have), "would send
    again: same report as last poll" (AISHub is still returning the record
    the plugin last sent, so it goes again to keep the target on the
-   plotters), or "skip: own receiver has it".
+   plotters), "would send again: held, not in AISHub's reply for 2.1 min,
+   hold 4.5 min" (AISHub left the vessel out, and it is kept until its
+   hold runs out), "drop: not in AISHub's reply for 4.7 min, hold 4.5
+   min", or "skip: own receiver has it".
 4. Untick **Dry run**. Targets appear on the plotters.
 
 ## Status
@@ -131,12 +144,15 @@ reads like:
 
 ```
 12 polls. own receiver c078c37ae76baa6d@1 has reported 11 vessels since start;
-last poll: 42 from AISHub, 10 own receiver has, 31 sent to plotters (18 repeats of the last report, 75 messages)
+last poll: 42 from AISHub, 10 own receiver has, 33 sent to plotters (18 repeats of the last report, 2 held while AISHub is quiet, 79 messages)
 ```
 
-In dry run the last part reads "31 would have been sent". If the
-connection cannot send yet, the vessels that were not sent are counted
-as "not sent (no NMEA 2000 output)".
+"Held while AISHub is quiet" counts the vessels sent although AISHub
+left them out of this reply. When a hold runs out the status adds
+"1 dropped after AISHub went quiet" for that poll. In dry run the
+sent part reads "33 would have been sent". If the connection cannot
+send yet, the vessels that were not sent are counted as "not sent (no
+NMEA 2000 output)".
 
 Errors from AISHub (a bad key, "Too frequent requests", a timeout) go
 to the server log and to the end of the status line, and the next poll
