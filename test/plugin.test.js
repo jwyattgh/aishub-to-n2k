@@ -1,6 +1,5 @@
 const test = require('node:test')
 const assert = require('node:assert')
-const { setTimeout: wait } = require('node:timers/promises')
 const EventEmitter = require('events')
 
 const AIS700 = 'c078c37ae76baa6d'
@@ -32,8 +31,7 @@ function fakeApp () {
   app.setPluginError = () => {}
   app.debug = () => {}
   app.error = m => { app.errors = (app.errors || []).concat(m) }
-  app.n2kOut = []
-  app.on('nmea2000JsonOut', m => app.n2kOut.push(m))
+  app.n2kOut = [] // what the fake gateway sender is given
   app.signalk = {
     retrieve: () => ({
       sources: {
@@ -52,7 +50,11 @@ function fakeApp () {
 // each request asked for is kept in `boxes`.
 function startWith (app, options, replies) {
   const aishub = require('../lib/aishub')
+  const ydwg = require('../lib/ydwg')
   const original = aishub.fetchVessels
+  const originalSender = ydwg.createSender
+  // The gateway sender is swapped for one that records what it is given.
+  ydwg.createSender = () => ({ send: m => app.n2kOut.push(m), close: () => {} })
   const boxes = []
   let n = 0
   aishub.fetchVessels = async (key, box) => {
@@ -65,10 +67,9 @@ function startWith (app, options, replies) {
     apiKey: 'AH_TEST',
     connection: CONNECTION,
     devices: [AIS700],
-    sendSpacingMs: 0, // straight to the bus, so the tests can count at once
     ...options
   })
-  return { plugin, boxes, restore: () => { aishub.fetchVessels = original } }
+  return { plugin, boxes, restore: () => { aishub.fetchVessels = original; ydwg.createSender = originalSender } }
 }
 
 // AISHub's TIME for a moment `secondsAgo` before now.
@@ -109,7 +110,6 @@ function fakeTimers (t) {
 test('sends only the vessels the own receiver does not have as new a message from', async t => {
   const timers = fakeTimers(t)
   const app = fakeApp()
-  app.isNmea2000OutAvailable = true
   // Signal K already holds NAUTI DREAM from the AIS700 (source label <connection>.<address>),
   // heard a second ago; DON TUTO from it a minute ago.
   app.vessels[368341220] = { values: { [`${CONNECTION}.1`]: { timestamp: new Date(Date.now() - 1000).toISOString() } } }
@@ -129,6 +129,7 @@ test('sends only the vessels the own receiver does not have as new a message fro
       311000123: [129038, 129794]
     })
     assert.match(app.status, /has reported 1 vessels since start/)
+    assert.match(app.status, /sending to gateway 192\.168\.4\.25:1458$/)
   } finally {
     plugin.stop()
     restore()
@@ -138,7 +139,6 @@ test('sends only the vessels the own receiver does not have as new a message fro
 test('a report AISHub keeps returning is sent again every poll, so the plotters keep the target', async t => {
   const timers = fakeTimers(t)
   const app = fakeApp()
-  app.isNmea2000OutAvailable = true
   const newer = { ...NEVER_HEARD, TIME: timeAgo(-70) }
   const { plugin, restore } = startWith(app, {}, [[NEVER_HEARD, FAR_SHIP], [NEVER_HEARD, FAR_SHIP], [newer]])
   try {
@@ -162,7 +162,6 @@ test('a report AISHub keeps returning is sent again every poll, so the plotters 
 test('a vessel AISHub leaves out is held for its own padded gap between reports, then dropped', async t => {
   const timers = fakeTimers(t)
   const app = fakeApp()
-  app.isNmea2000OutAvailable = true
   const vida = { ...NEVER_HEARD, TIME: timeAgo(0) }
   const vidaLater = { ...NEVER_HEARD, TIME: timeAgo(-70) } // reported again 70 s later
   const { plugin, restore } = startWith(app, {}, [[vida, FAR_SHIP], [vidaLater, FAR_SHIP], [FAR_SHIP]])
@@ -178,7 +177,7 @@ test('a vessel AISHub leaves out is held for its own padded gap between reports,
     offset = 60 * 1000
     timers.tick(); await settle()
     assert.strictEqual(app.n2kOut.length, 15, 'VIDA held and sent, BIG SHIP repeated')
-    assert.match(app.status, /1 from AISHub, 0 own receiver has, 2 sent to plotters \(2 repeats of the last report, 1 held while AISHub is quiet, 5 messages\)$/)
+    assert.match(app.status, /1 from AISHub, 0 own receiver has, 2 sent to plotters \(2 repeats of the last report, 1 held while AISHub is quiet, 5 messages\); sending to gateway/)
     // 130 s of silence: past the hold, dropped.
     offset = 130 * 1000
     timers.tick(); await settle()
@@ -188,7 +187,7 @@ test('a vessel AISHub leaves out is held for its own padded gap between reports,
     // Once dropped it stays dropped until AISHub lists it again.
     timers.tick(); await settle()
     assert.strictEqual(app.n2kOut.length, 19)
-    assert.match(app.status, /0 held while AISHub is quiet, 2 messages\)$/)
+    assert.match(app.status, /0 held while AISHub is quiet, 2 messages\); sending to gateway/)
   } finally {
     Date.now = realNow
     plugin.stop()
@@ -199,7 +198,6 @@ test('a vessel AISHub leaves out is held for its own padded gap between reports,
 test('a held vessel the own receiver starts hearing is dropped at once', async t => {
   const timers = fakeTimers(t)
   const app = fakeApp()
-  app.isNmea2000OutAvailable = true
   const { plugin, restore } = startWith(app, {}, [[NEVER_HEARD], []])
   try {
     timers.tick(); await settle()
@@ -214,51 +212,9 @@ test('a held vessel the own receiver starts hearing is dropped at once', async t
   }
 })
 
-test('with output unavailable nothing is emitted, the status says to restart, and the reports go once output is there', async t => {
-  const timers = fakeTimers(t)
-  const app = fakeApp()
-  app.isNmea2000OutAvailable = false
-  const { plugin, restore } = startWith(app, {}, [[NEVER_HEARD]])
-  try {
-    timers.tick()
-    await settle()
-    assert.strictEqual(app.n2kOut.length, 0)
-    assert.match(app.status, /0 sent to plotters \(0 repeats of the last report, 0 held while AISHub is quiet, 0 messages\), 1 not sent \(no NMEA 2000 output\)/)
-    assert.match(app.status, /NMEA 2000 output not available on ydwg-n2k-udp: restart Signal K/)
-    app.emit('nmea2000OutAvailable')
-    timers.tick()
-    await settle()
-    assert.strictEqual(app.n2kOut.length, 3, 'the unsent report was not counted as sent')
-    assert.match(app.status, /1 sent to plotters \(0 repeats of the last report, 0 held while AISHub is quiet, 3 messages\)$/)
-  } finally {
-    plugin.stop()
-    restore()
-  }
-})
-
-test('output stays available across the restart a settings change gives the plugin', async t => {
-  const timers = fakeTimers(t)
-  const app = fakeApp()
-  app.isNmea2000OutAvailable = false // Signal K's copy of itself never changes this
-  const { plugin, restore } = startWith(app, {}, [[NEVER_HEARD]])
-  try {
-    app.emit('nmea2000OutAvailable') // the connection claimed its address after the plugin loaded
-    plugin.stop()
-    plugin.start({ apiKey: 'AH_TEST', connection: CONNECTION, devices: [AIS700], boxDistance: 50, sendSpacingMs: 0 })
-    timers.tick()
-    await settle()
-    assert.strictEqual(app.n2kOut.length, 3)
-    assert.doesNotMatch(app.status, /not available/)
-  } finally {
-    plugin.stop()
-    restore()
-  }
-})
-
 test('dry run sends nothing and writes each decision to the server log', async t => {
   const timers = fakeTimers(t)
   const app = fakeApp()
-  app.isNmea2000OutAvailable = true
   const lines = []
   const log = t.mock.method(console, 'log', (...args) => lines.push(args.join(' ')))
   const { plugin, restore } = startWith(app, { dryRun: true }, [[OWN, HEARD_ON_BUS, NEVER_HEARD]])
@@ -270,7 +226,7 @@ test('dry run sends nothing and writes each decision to the server log', async t
     assert.strictEqual(app.n2kOut.length, 0)
     assert.match(app.status, /dry run/)
     assert.strictEqual(lines.length, 3)
-    assert.match(lines[0], /^aishub-to-n2k poll 1: 368066270 ORION \| AISHub \d\d:\d\d:\d\d \| own receiver never \| last sent never \| \d+\.\d km bearing \d\d\d \| -?\d+\.\d{4},-?\d+\.\d{4} \| class B \| sog .* \| nav \d+ .* \| type \d+ \| callsign .* imo .* \| \d+x\d+ m draught .* \| dest .* eta .* \| skip: own vessel$/)
+    assert.match(lines[0], /^aishub-to-ydwg poll 1: 368066270 ORION \| AISHub \d\d:\d\d:\d\d \| own receiver never \| last sent never \| \d+\.\d km bearing \d\d\d \| -?\d+\.\d{4},-?\d+\.\d{4} \| class B \| sog .* \| nav \d+ .* \| type \d+ \| callsign .* imo .* \| \d+x\d+ m draught .* \| dest .* eta .* \| skip: own vessel$/)
     assert.match(lines[1], /367704910 CARPE DIEM \| AISHub \d\d:\d\d:\d\d \| own receiver \d\d:\d\d:\d\d \| last sent never \| .* \| skip: own receiver has it$/)
     assert.match(lines[2], /367642060 VIDA \| .* \| class B \| .* \| would send: own receiver has never heard it \(PGNs 129039, 129809, 129810\)$/)
   } finally {
@@ -295,9 +251,11 @@ test('box distance is converted from the chosen unit, and the old boxKm setting 
   assert.ok(Math.abs(width(b.boxes[0]) - 1.797 * 1.609344) < 0.01, '100 statute miles each way')
 })
 
-test('settings form: connections, AIS devices, own MMSI from Signal K, units, dry run off, AISHub minimum interval', () => {
+test('settings form: gateway, connections, AIS devices, own MMSI from Signal K, units, dry run off, AISHub minimum interval', () => {
   const plugin = require('..')(fakeApp())
   const p = plugin.schema().properties
+  assert.strictEqual(p.gatewayHost.default, '192.168.4.25')
+  assert.strictEqual(p.gatewayPort.default, 1458)
   assert.deepStrictEqual(p.connection.enum, [CONNECTION])
   assert.deepStrictEqual(p.devices.items.enum, [AIS700])
   assert.match(p.devices.items.enumNames[0], /AIS700/)
@@ -308,7 +266,7 @@ test('settings form: connections, AIS devices, own MMSI from Signal K, units, dr
   assert.strictEqual(p.pollSeconds.minimum, 61)
   assert.strictEqual(p.pollSeconds.default, 61)
   assert.strictEqual(p.dryRun.default, false)
-  assert.deepStrictEqual(plugin.schema().required, ['apiKey', 'mmsi', 'connection'])
+  assert.deepStrictEqual(plugin.schema().required, ['apiKey', 'mmsi', 'gatewayHost', 'connection'])
   assert.strictEqual(plugin.uiSchema().apiKey['ui:widget'], 'password')
 })
 
@@ -349,7 +307,6 @@ test('no own position: the poll is skipped until there is one', async t => {
 test('an AISHub error goes to the server log and the status, and the next poll tries again', async t => {
   const timers = fakeTimers(t)
   const app = fakeApp()
-  app.isNmea2000OutAvailable = true
   const aishub = require('../lib/aishub')
   const original = aishub.fetchVessels
   let calls = 0
@@ -358,8 +315,11 @@ test('an AISHub error goes to the server log and the status, and the next poll t
     if (calls === 1) throw new Error('AISHub: Too frequent requests!')
     return { header: {}, vessels: [aishub.normalize(NEVER_HEARD)] }
   }
+  const ydwg = require('../lib/ydwg')
+  const originalSender = ydwg.createSender
+  ydwg.createSender = () => ({ send: m => app.n2kOut.push(m), close: () => {} })
   const plugin = require('..')(app)
-  plugin.start({ apiKey: 'AH_TEST', connection: CONNECTION, devices: [AIS700], sendSpacingMs: 0 })
+  plugin.start({ apiKey: 'AH_TEST', connection: CONNECTION, devices: [AIS700] })
   try {
     timers.tick(); await settle()
     assert.deepStrictEqual(app.errors, ['AISHub: Too frequent requests!'])
@@ -370,37 +330,7 @@ test('an AISHub error goes to the server log and the status, and the next poll t
   } finally {
     plugin.stop()
     aishub.fetchVessels = original
+    ydwg.createSender = originalSender
   }
 })
 
-test('messages go to the bus spaced out, not in one burst', async t => {
-  const timers = fakeTimers(t)
-  const app = fakeApp()
-  app.isNmea2000OutAvailable = true
-  const { plugin, restore } = startWith(app, { sendSpacingMs: 20 }, [[NEVER_HEARD, FAR_SHIP]])
-  try {
-    timers.tick()
-    await settle()
-    assert.match(app.status, /2 sent to plotters \(0 repeats of the last report, 0 held while AISHub is quiet, 5 messages\)/)
-    assert.strictEqual(app.n2kOut.length, 0, 'nothing on the bus yet: the first message waits its 20 ms')
-    await wait(50) // real timer: the fake one never fires
-    assert.ok(app.n2kOut.length >= 1 && app.n2kOut.length <= 3, `after 50 ms, one to three messages, not all five: ${app.n2kOut.length}`)
-    await wait(120)
-    assert.strictEqual(app.n2kOut.length, 5, 'all five out within 170 ms')
-    assert.deepStrictEqual(app.n2kOut.map(m => m['User ID']), [367642060, 367642060, 367642060, 311000123, 311000123], 'in the order they were queued')
-  } finally { restore(); plugin.stop() }
-})
-
-test('messages still waiting when the next poll comes are dropped, and counted', async t => {
-  const timers = fakeTimers(t)
-  const app = fakeApp()
-  app.isNmea2000OutAvailable = true
-  const { plugin, restore } = startWith(app, { sendSpacingMs: 100000 }, [[NEVER_HEARD, FAR_SHIP]])
-  try {
-    timers.tick()
-    await settle()
-    timers.tick()
-    await settle()
-    assert.match(app.status, /5 messages\), 5 messages from the poll before still waiting for the bus were dropped/)
-  } finally { restore(); plugin.stop() }
-})

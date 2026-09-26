@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.2.0
+
+Renamed from `aishub-to-n2k` to `aishub-to-ydwg`: the plugin now sends
+straight to a Yacht Devices YDWG-02 gateway, and nowhere else. New
+plugin id, so its settings start empty after the upgrade; remove
+`aishub-to-n2k` afterwards.
+
+- Messages go to the gateway from the plugin itself, over UDP to the
+  gateway's address and RAW port, every message whole in one packet
+  and messages 20 ms apart. Signal K's NMEA 2000 connection is only
+  read (for what the own receiver hears), never sent through. Measured
+  on the author's boat: Signal K's connection sends each frame of a
+  message as its own packet and the gateway loses about every other
+  frame; whole messages in one packet lose none; and a poll's worth
+  fired back to back had 13 to 15 of 37 messages confirmed by the
+  gateway, 20 ms apart 32 to 37 of 37.
+- New settings: gateway address (default 192.168.4.25) and port
+  (default 1458). The connection setting stays, for reading only.
+- Removed: "Milliseconds between messages to the bus" (0.1.7). Its
+  release note said the gateway "drops the tail of a burst"; that was a
+  guess, and wrong. The loss was inside every message, whatever the
+  spacing, because each message's frames went as separate packets.
+- Removed: the "NMEA 2000 output not available: restart Signal K"
+  status, the "not sent (no NMEA 2000 output)" count and the "still
+  waiting for the bus were dropped" count. None of them apply now.
+- The README's claim that the connection needed `createDevice: true`
+  was wrong too; the connection no longer sends anything.
+- `@canboat/canboatjs` is now a runtime dependency (it encodes the
+  messages). 0.1.x had no runtime dependencies.
+
 ## 0.1.7
 
 - Messages go to the bus one every 100 ms instead of all at once. A

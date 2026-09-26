@@ -1,5 +1,5 @@
 /*
- * @sv-orion/aishub-to-n2k: a Signal K plugin (plugin id aishub-to-n2k).
+ * @sv-orion/aishub-to-ydwg: a Signal K plugin (plugin id aishub-to-ydwg).
  *
  * Every poll:
  *   1. Ask AISHub for the vessels in a box around the boat.
@@ -18,14 +18,16 @@
  *      dropped and the plotters drop it the way they drop any lost target.
  *   4. Turn the rest into NMEA 2000 AIS messages: position, name and
  *      details, every poll.
- *   5. Hand those to the chosen NMEA 2000 connection, which sends them to
- *      the bus, so the plotters show the targets.
+ *   5. Send each vessel straight to the Yacht Devices YDWG-02 gateway, each
+ *      message whole in one UDP packet (lib/ydwg.js), and the gateway puts
+ *      it on the bus, so the plotters show the targets.
  *
  * Nothing here ever sends anything to AISHub except the request.
  */
 const aishub = require('./lib/aishub')
 const geo = require('./lib/geo')
 const n2k = require('./lib/n2k')
+const ydwg = require('./lib/ydwg')
 const { HeardList, parseLine, mmsiFromFrame } = require('./lib/heard')
 
 const ADDRESS_CLAIM = 60928
@@ -40,14 +42,12 @@ const CLOCK_TOLERANCE_MS = 10 * 1000
 const HOLD_PADDING = 1.25
 const GAP_HISTORY = 10 // gaps per vessel the average is taken over
 const ANCHORED_REPORT_MS = 3 * 60 * 1000 // AIS reporting interval of a ship at anchor
-// Messages go to the bus this far apart. Sent all at once, a poll's worth
-// (two or three messages per vessel, five or six frames each) leaves the
-// gateway in well under a second, and a YDWG-02 drops the tail of such a
-// burst: on the author's boat a third of the vessels never reached the bus.
-const SEND_SPACING_MS = 100
+// The gateway's RAW-protocol UDP port, as the YDWG-02 ships.
+const GATEWAY_PORT = 1458
+const GATEWAY_HOST = '192.168.4.25'
 const KM_PER_UNIT = { km: 1, nm: 1.852, mi: 1.609344 }
 const UNIT_NAMES = { km: 'kilometres', nm: 'nautical miles', mi: 'statute miles' }
-const LOG_PREFIX = 'aishub-to-n2k'
+const LOG_PREFIX = 'aishub-to-ydwg'
 const NAV_STATUS = {
   0: 'under way (engine)', 1: 'at anchor', 2: 'not under command', 3: 'restricted manoeuvrability',
   4: 'constrained by draught', 5: 'moored', 6: 'aground', 7: 'fishing', 8: 'under way (sailing)',
@@ -56,10 +56,10 @@ const NAV_STATUS = {
 
 module.exports = function (app) {
   const plugin = {
-    id: 'aishub-to-n2k',
-    name: 'AISHub to N2K',
+    id: 'aishub-to-ydwg',
+    name: 'AISHub to YDWG',
     description:
-      'Fetch vessels from AISHub, drop the ones your own AIS receiver hears, and send the rest to the NMEA 2000 bus for your plotters'
+      'Fetch vessels from AISHub, drop the ones your own AIS receiver hears, and send the rest straight to a Yacht Devices YDWG-02 gateway for your plotters'
   }
 
   let config
@@ -67,13 +67,7 @@ module.exports = function (app) {
   let onRawLine
   let pollTimer
   let statusTimer
-  let drainTimer
-  // Signal K hands a plugin a copy of the server object, taken when the
-  // plugin is loaded, so app.isNmea2000OutAvailable on it keeps its
-  // loading-time value. Keep the flag here, outside start and stop, so it
-  // also survives the restart Signal K gives the plugin on a settings change.
-  let outAvailable = !!app.isNmea2000OutAvailable
-  app.on('nmea2000OutAvailable', () => { outAvailable = true })
+  let sender
   // When we last asked AISHub, so that a restart on a settings change does
   // not ask again within the minute.
   let lastRequestAt = 0
@@ -87,7 +81,7 @@ module.exports = function (app) {
     }
     const connectionItem = {
       type: 'string',
-      title: 'NMEA 2000 connection to send on (it must be able to send: see the README)'
+      title: 'NMEA 2000 connection your own AIS receiver is on (only read, to know what it hears)'
     }
     const connections = knownConnections()
     if (connections.length > 0) {
@@ -96,7 +90,7 @@ module.exports = function (app) {
     }
     return {
       type: 'object',
-      required: ['apiKey', 'mmsi', 'connection'],
+      required: ['apiKey', 'mmsi', 'gatewayHost', 'connection'],
       properties: {
         apiKey: {
           type: 'string',
@@ -126,11 +120,17 @@ module.exports = function (app) {
           default: MIN_POLL_SECONDS,
           minimum: MIN_POLL_SECONDS
         },
-        sendSpacingMs: {
+        gatewayHost: {
+          type: 'string',
+          title: 'Address of the YDWG-02 gateway to send to',
+          default: GATEWAY_HOST
+        },
+        gatewayPort: {
           type: 'number',
-          title: `Milliseconds between messages to the bus (${SEND_SPACING_MS} keeps a gateway from dropping the end of a burst; 0 sends them all at once)`,
-          default: SEND_SPACING_MS,
-          minimum: 0
+          title: 'Its RAW-protocol UDP port (the gateway server set to RAW, both directions)',
+          default: GATEWAY_PORT,
+          minimum: 1,
+          maximum: 65535
         },
         connection: connectionItem,
         devices: {
@@ -149,7 +149,7 @@ module.exports = function (app) {
   }
 
   plugin.uiSchema = () => ({
-    'ui:order': ['apiKey', 'mmsi', 'boxDistance', 'boxUnit', 'pollSeconds', 'sendSpacingMs', 'connection', 'devices', 'dryRun'],
+    'ui:order': ['apiKey', 'mmsi', 'boxDistance', 'boxUnit', 'pollSeconds', 'gatewayHost', 'gatewayPort', 'connection', 'devices', 'dryRun'],
     apiKey: { 'ui:widget': 'password' },
     devices: { 'ui:widget': 'checkboxes' }
   })
@@ -165,7 +165,8 @@ module.exports = function (app) {
       boxText: `${Math.max(1, distance)} ${UNIT_NAMES[unit]}`,
       unit,
       pollSeconds: Math.max(MIN_POLL_SECONDS, Number(options.pollSeconds) || MIN_POLL_SECONDS),
-      sendSpacingMs: options.sendSpacingMs === undefined ? SEND_SPACING_MS : Math.max(0, Number(options.sendSpacingMs) || 0),
+      gatewayHost: String(options.gatewayHost || GATEWAY_HOST).trim(),
+      gatewayPort: Number(options.gatewayPort) || GATEWAY_PORT,
       connection: options.connection,
       devices: options.devices || [],
       dryRun: options.dryRun === true
@@ -178,12 +179,12 @@ module.exports = function (app) {
       // it, gaps: ms between its recent reports, sentTime: AISHub time of
       // the record last sent }
       tracked: new Map(),
-      queue: [], // messages waiting their turn on the bus
       polls: 0,
       lastPoll: undefined,
       errors: 0,
       lastError: undefined
     }
+    if (!config.dryRun) sender = ydwg.createSender(config.gatewayHost, config.gatewayPort, recordError)
 
     // Step 3 needs the receiver's last message time per MMSI: read them
     // straight off the bus from the chosen devices.
@@ -210,8 +211,8 @@ module.exports = function (app) {
   plugin.stop = () => {
     clearTimeout(pollTimer)
     clearInterval(statusTimer)
-    clearInterval(drainTimer)
-    drainTimer = undefined
+    if (sender) sender.close()
+    sender = undefined
     if (onRawLine) app.removeListener('canboatjs:rawoutput', onRawLine)
     onRawLine = undefined
     state = undefined
@@ -250,8 +251,6 @@ module.exports = function (app) {
     const counts = emptyCounters()
     state.own = own
     counts.fromAishub = vessels.length
-    // Anything still waiting from the last poll is out of date now.
-    counts.leftOver = state.queue.splice(0).length
     const listed = new Set()
     for (const v of vessels) {
       if (v.mmsi === config.mmsi) {
@@ -311,14 +310,10 @@ module.exports = function (app) {
     const lastSent = t.sentTime
     const repeat = lastSent !== undefined && v.time !== undefined && v.time <= lastSent
     const messages = [n2k.positionReport(v), ...n2k.staticData(v)]
-    const delivered = messages.map(msg => send(msg, counts)).every(Boolean)
-    if (delivered) {
-      t.sentTime = repeat ? lastSent : v.time
-      counts.sentToPlotters++
-      if (repeat) counts.repeats++
-    } else {
-      counts.notSentNoOutput++
-    }
+    messages.forEach(msg => send(msg, counts))
+    t.sentTime = repeat ? lastSent : v.time
+    counts.sentToPlotters++
+    if (repeat) counts.repeats++
     decision(v, why || (repeat ? 'would send again: same report as last poll'
       : ownAt === undefined ? 'would send: own receiver has never heard it' : 'would send: newer than own receiver\'s last message'),
     ownAt, lastSent, messages.map(m => m.pgn))
@@ -367,31 +362,11 @@ module.exports = function (app) {
     return (ms / 60000).toFixed(1)
   }
 
-  // Step 5: one NMEA 2000 message to the connection. Returns whether it went.
+  // Step 5: one message straight to the gateway, whole, in one packet.
   function send (msg, counts) {
-    if (config.dryRun) {
-      counts.messages++
-      return true
-    }
-    if (!outAvailable) return false
     counts.messages++
-    if (config.sendSpacingMs === 0) {
-      app.emit('nmea2000JsonOut', msg)
-      return true
-    }
-    state.queue.push(msg)
-    if (!drainTimer) {
-      drainTimer = setInterval(() => {
-        const next = state && state.queue.shift()
-        if (!next) {
-          clearInterval(drainTimer)
-          drainTimer = undefined
-          return
-        }
-        app.emit('nmea2000JsonOut', next)
-      }, config.sendSpacingMs)
-    }
-    return true
+    if (config.dryRun) return
+    sender.send(msg)
   }
 
   // In a dry run, one line per vessel per poll in the server log.
@@ -476,9 +451,7 @@ module.exports = function (app) {
       held: 0,
       dropped: 0,
       sentToPlotters: 0,
-      messages: 0,
-      leftOver: 0,
-      notSentNoOutput: 0
+      messages: 0
     }
   }
 
@@ -597,12 +570,10 @@ module.exports = function (app) {
       parts.push(`last poll: ${last.fromAishub} from AISHub, ${last.ownReceiverHasIt} own receiver has, ` +
         `${last.sentToPlotters} ${config.dryRun ? 'would have been sent' : 'sent to plotters'} (${last.repeats} repeats of the last report, ` +
         `${last.held} held while AISHub is quiet, ${last.messages} messages)` +
-        (last.dropped ? `, ${last.dropped} dropped after AISHub went quiet` : '') +
-        (last.notSentNoOutput ? `, ${last.notSentNoOutput} not sent (no NMEA 2000 output)` : '') +
-        (last.leftOver ? `, ${last.leftOver} messages from the poll before still waiting for the bus were dropped` : ''))
+        (last.dropped ? `, ${last.dropped} dropped after AISHub went quiet` : ''))
     }
     if (config.dryRun) parts.push('dry run: decisions are in the server log')
-    else if (!outAvailable) parts.push(`NMEA 2000 output not available on ${config.connection}: restart Signal K to enable it (see README)`)
+    else parts.push(`sending to gateway ${config.gatewayHost}:${config.gatewayPort}`)
     if (state.errors) parts.push(`${state.errors} errors (last: ${state.lastError})`)
     app.setPluginStatus(`${state.polls} polls. ${parts.join('; ')}`)
   }

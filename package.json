@@ -1,7 +1,7 @@
 {
-  "name": "@sv-orion/aishub-to-n2k",
-  "version": "0.1.7",
-  "description": "Signal K plugin: fetch vessels from AISHub, drop the ones your own AIS receiver hears, and send the rest to the NMEA 2000 bus for your plotters",
+  "name": "@sv-orion/aishub-to-ydwg",
+  "version": "0.2.0",
+  "description": "Signal K plugin: fetch vessels from AISHub, drop the ones your own AIS receiver hears, and send the rest straight to a Yacht Devices YDWG-02 gateway for your plotters",
   "main": "index.js",
   "files": [
     "index.js",
@@ -22,17 +22,17 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jwyattgh/aishub-to-n2k.git"
+    "url": "git+https://github.com/jwyattgh/aishub-to-ydwg.git"
   },
-  "homepage": "https://github.com/jwyattgh/aishub-to-n2k#readme",
+  "homepage": "https://github.com/jwyattgh/aishub-to-ydwg#readme",
   "bugs": {
-    "url": "https://github.com/jwyattgh/aishub-to-n2k/issues"
+    "url": "https://github.com/jwyattgh/aishub-to-ydwg/issues"
   },
   "engines": {
     "node": ">=18"
   },
-  "dependencies": {},
-  "devDependencies": {
+  "dependencies": {
     "@canboat/canboatjs": "^3.20.0"
-  }
+  },
+  "devDependencies": {}
 }
